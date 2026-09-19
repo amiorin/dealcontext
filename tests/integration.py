@@ -327,13 +327,20 @@ def main():
             with item('A4 A6 unparseable dates are rejected, not replaced by the server time'):
                 dated = create('deals', {**new_deal, 'title': 'Bad dates', 'status': 'open'})
                 before = audit_count()
-                for bad in ('09/15/2026', '2026-13-45', 'Sep 15 2026'):
-                    reject('PATCH', one('deals', dated), {'status': 'won', 'closed_at': bad}, ['closed_at'])
-                    reject('PATCH', one('deals', dated), {'expected_close': bad}, ['expected_close'])
-                    reject('POST', many('activities'), {'subject': 'Bad date', 'kind': 'task', 'owner': agent['id'], 'due_at': '2030-01-01 09:00:00.000Z', 'done': True, 'completed_at': bad}, ['completed_at'])
+                for deals, activities in (('deals', 'activities'), (dated['collectionId'], activity['collectionId'])):
+                    for bad in ('09/15/2026', '2026-13-45', 'Sep 15 2026'):
+                        reject('PATCH', one(deals, dated), {'status': 'won', 'closed_at': bad}, ['closed_at'])
+                        reject('PATCH', one(deals, dated), {'expected_close': bad}, ['expected_close'])
+                        reject('POST', many(deals), {**new_deal, 'status': 'open', 'expected_close': bad}, ['expected_close'])
+                        reject('POST', many(activities), {'subject': 'Bad date', 'kind': 'task', 'owner': agent['id'], 'due_at': '2030-01-01 09:00:00.000Z', 'done': True, 'completed_at': bad}, ['completed_at'])
                 assert request('GET', one('deals', dated), token=token)['status'] == 'open' and audit_count() == before
-                kept = request('PATCH', one('deals', dated), {'status': 'won', 'closed_at': '2026-09-15T10:00:00+02:00'}, token)
+                kept = request('PATCH', one(dated['collectionId'], dated), {'status': 'won', 'closed_at': '2026-09-15T10:00:00+02:00'}, token)
                 assert kept['closed_at'] == '2026-09-15 08:00:00.000Z', kept
+                by_id = request('POST', many(dated['collectionId']), {**new_deal, 'status': 'open', 'expected_close': '2030-01-01T09:00:00Z'}, token)
+                assert by_id['expected_close'] == '2030-01-01 09:00:00.000Z', by_id
+            with item('unknown collections retain PocketBase errors'):
+                request('POST', many('missing_collection'), {'expected_close': 'invalid'}, token, expected=404)
+                request('PATCH', one('missing_collection', dated), {'expected_close': 'invalid'}, token, expected=404)
             with item('B12 concurrent writes to one record: the loser gets 409, no update is lost, audit_log matches the data'):
                 contested = create('deals', {**new_deal, 'title': 'Contested', 'status': 'open', 'value_minor': 100})
                 conflicts = []
@@ -493,10 +500,23 @@ def main():
                 assert request('GET', one('people', cy), token=token)['organization'] == org['id'] and counts() == before
             with item('C10 A4 A6 unparseable dates inside a batch are rejected before any request runs'):
                 before = counts()
-                for bad in ('09/15/2026', '2026-13-45', 'Sep 15 2026'):
-                    reject('POST', '/api/batch', {'requests': [post('deals', {**batch_deal, 'title': 'Bad batch date', 'status': 'won', 'closed_at': bad})]}, ['closed_at'])
-                    reject('POST', '/api/batch', {'requests': [post('notes', {'body': 'kept out', 'deal': dee_deal['id'], 'owner': agent['id']}), patch('deals', dee_deal, {'expected_close': bad})]}, ['expected_close'])
-                    reject('POST', '/api/batch', {'requests': [post('activities', {**new_activity, 'done': True, 'completed_at': bad})]}, ['completed_at'])
+                for deals, activities in (('deals', 'activities'), (dated['collectionId'], activity['collectionId'])):
+                    for bad in ('09/15/2026', '2026-13-45', 'Sep 15 2026'):
+                        reject('POST', '/api/batch', {'requests': [post(deals, {**batch_deal, 'title': 'Bad batch date', 'status': 'won', 'closed_at': bad})]}, ['closed_at'])
+                        reject('POST', '/api/batch', {'requests': [post('notes', {'body': 'kept out', 'deal': dee_deal['id'], 'owner': agent['id']}), patch(deals, dee_deal, {'expected_close': bad})]}, ['expected_close'])
+                        reject('POST', '/api/batch', {'requests': [post(activities, {**new_activity, 'done': True, 'completed_at': bad})]}, ['completed_at'])
+                assert counts() == before, (before, counts())
+            with item('collection IDs accept valid dates in batch creates and updates'):
+                created, patched = batch([
+                    post(dated['collectionId'], {**batch_deal, 'expected_close': '2030-01-01T09:00:00Z'}),
+                    patch(dee_deal['collectionId'], dee_deal, {'expected_close': '2030-01-02T09:00:00Z'}),
+                ])
+                assert created['expected_close'] == '2030-01-01 09:00:00.000Z', created
+                assert patched['expected_close'] == '2030-01-02 09:00:00.000Z', patched
+            with item('unknown collections retain per-request batch errors and atomic rollback'):
+                before = counts()
+                batch_fails([post('notes', {'body': 'kept out', 'deal': dee_deal['id'], 'owner': agent['id']}),
+                             post('missing_collection', {'expected_close': 'invalid'})], 1, 404)
                 assert counts() == before, (before, counts())
             print('PASS: provisioning, CRM BaaS writes, authorization, validation, SQL joins, stage moves, activities, notes, closing deal, '
                   'deal and activity lifecycle rules, server-filled closed_at and completed_at, reopening, ISO 4217 currency, linked notes, '

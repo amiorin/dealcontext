@@ -74,8 +74,16 @@ function dates(e) {
   }
   for (const [url, body] of writes) {
     const match = /^\/api\/collections\/([^\/?]+)\/records/.exec(String(url || ""));
-    if (!match || !body || !CRM.includes(match[1])) continue;
-    for (const field of e.app.findCachedCollectionByNameOrId(match[1]).fields) {
+    if (!match || !body) continue;
+    let collection;
+    try {
+      collection = e.app.findCachedCollectionByNameOrId(match[1]);
+    } catch (_) {
+      // Let PocketBase report unknown collections through its normal API error handling.
+      continue;
+    }
+    if (!CRM.includes(collection.name)) continue;
+    for (const field of collection.fields) {
       const value = body[field.name];
       if (field.type() !== "date" || value === undefined || value === null || String(value).trim() === "") continue;
       if (new DateTime(String(value)).isZero()) {
