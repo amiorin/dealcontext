@@ -1,12 +1,16 @@
 # Workflows
 
+Field names and server rules are in [schema.md](schema.md). Requests and `dc.py` commands are in [examples.md](examples.md).
+
 ## Start a pipeline
 
-Create a pipeline with `active: true`, then stages with distinct positions. Choose names and stage probabilities with the user. There are no seeded business records.
+Create the pipeline with `active: true` and its stages in one batch: choose the pipeline id with `dc.py newid` and use it in each stage's `pipeline`. Always send `position`, numbered 1, 2, 3 in pipeline order; an omitted position is stored as 0 and the second such stage fails the unique index. Choose names and stage probabilities with the user. There are no seeded business records.
 
 ## Create a deal
 
-Find the organization and person by SQL. Resolve ambiguous matches before writing. Reuse existing records or create missing contacts through the records API. Find the target stage and create a deal with title, stage, owner, value_minor, currency, and status `open`. Create the next activity if the user requested a follow-up.
+Find the organization and person by SQL. Resolve ambiguous matches before writing. Reuse existing records. Find the target stage. A deal needs title, stage, owner, currency, and status `open`. Send `value_minor` when the value is known; an omitted value is stored as 0, which reads the same as a zero-value deal. If the user gives no currency, ask; do not guess.
+
+Write the deal and everything that belongs to it in one batch (`POST /api/batch`, or `dc.py batch`): missing contacts first, then the deal, then its first activity if the user requested a follow-up, then a note if there is evidence to record. Choose the id of each new record that a later request refers to: take a 15-character `[a-z0-9]` id from `dc.py newid`, send it as `id` in the create body, and use it in the later relations. A batch holds at most 20 requests and is one transaction: either every record is saved, with one `audit_log` row each, or none is. When a batch fails, the response names the failed request and its error; fix that request and send the whole batch again.
 
 ## Move or close a deal
 
@@ -26,4 +30,6 @@ Query `audit_log` by `collection` and `record` to see who changed a record and w
 
 ## Retry safely
 
-Read current state after a timeout before retrying writes. On HTTP 409 another request changed the record first: read it again, confirm your change still applies, and retry. Several REST requests are not one transaction. If a deal was created but its activity failed, keep the deal and retry only the missing activity. Tell the user about partial results. Agents cannot delete, so a duplicate created by a blind retry stays until the operator deletes it. Report the duplicate's collection and record ID to the user, and until it is removed mark it so it is not mistaken for live work, for example close a duplicate deal as `lost` with `lost_reason` "duplicate" or complete a duplicate activity.
+Read current state after a timeout before retrying writes: the write may have been saved. A client-chosen id makes this check exact, because `get` on that id shows whether the record exists, and a repeated create with the same id is rejected instead of making a duplicate. On HTTP 409 (`dc.py` exit code 4) another request changed the record first: read it again, confirm your change still applies, and retry.
+
+A batch is atomic, so a failed batch saved nothing and can be sent again after the fix. Several requests outside a batch are not one transaction and can partially succeed. If a deal was created but its activity failed, keep the deal and retry only the missing activity. Tell the user about partial results. Agents cannot delete, so a duplicate created by a blind retry stays until the operator deletes it. Report the duplicate's collection and record ID to the user, and until it is removed mark it so it is not mistaken for live work, for example close a duplicate deal as `lost` with `lost_reason` "duplicate" or complete a duplicate activity.

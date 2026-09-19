@@ -354,11 +354,158 @@ def main():
                 for row in updates:
                     replayed.update(row['changes']['after'])
                 assert len(updates) == 50 and (replayed['title'], replayed['value_minor']) == ('t24', 1024), (len(updates), replayed)
+
+            # C. Batch API: POST /api/batch runs up to 20 record requests in one transaction.
+            def post(collection, body):
+                return {'method': 'POST', 'url': many(collection), 'body': body}
+            def patch(collection, record, body):
+                return {'method': 'PATCH', 'url': one(collection, record), 'body': body}
+            def batch(requests, auth=token):
+                """The batch must succeed; returns the bodies in request order."""
+                results = request('POST', '/api/batch', {'requests': requests}, auth)
+                assert [result['status'] for result in results] == [200] * len(requests), results
+                return [result['body'] for result in results]
+            def batch_fails(requests, index, status, fields=(), auth=token):
+                """The batch must fail with 400, blame only the request at index, and carry that request's own error."""
+                result = request('POST', '/api/batch', {'requests': requests}, auth, expected=400)
+                failed = result['data']['requests']
+                assert list(failed) == [str(index)], result
+                response = failed[str(index)]['response']
+                assert response['status'] == status, result
+                assert not fields or any(field in json.dumps(response) for field in fields), ('response names none of', fields, result)
+            def tally(table, where='1=1'):
+                return sql(f'SELECT count(*) FROM {table} WHERE {where}')['rows'][0][0]
+            def counts():
+                return {table: tally(table) for table in CRM + ['audit_log']}
+            def absent(collection, record_id):
+                request('GET', one(collection, {'id': record_id}), token=token, expected=404)
+
+            batch_deal = {**new_deal, 'status': 'open'}
+            with item('C1 a batch returns 200 and one result per request in order; rules, auto-fill and created_by apply to each request'):
+                before = counts()
+                bodies = batch([post('deals', {**batch_deal, 'id': 'batchdeal000001', 'title': 'Batch deal'}),
+                                post('activities', {**new_activity, 'subject': 'Batch call', 'deal': 'batchdeal000001', 'done': True}),
+                                post('notes', {'body': 'Batch note', 'deal': 'batchdeal000001', 'owner': agent['id']}),
+                                post('deals', {**batch_deal, 'title': 'Batch won', 'status': 'won'})])
+                assert [body['collectionName'] for body in bodies] == ['deals', 'activities', 'notes', 'deals'], bodies
+                assert [body.get('title') or body.get('subject') or body.get('body') for body in bodies] == ['Batch deal', 'Batch call', 'Batch note', 'Batch won'], bodies
+                for body in bodies:
+                    assert body['created_by'] == agent['id'] and body['updated_by'] == agent['id'], body
+                assert recent(bodies[1]['completed_at']) and recent(bodies[3]['closed_at']), bodies
+                assert request('GET', one('activities', bodies[1]), token=token)['completed_at'] == bodies[1]['completed_at']
+                after = counts()
+                assert {table: after[table] - before[table] for table in after if after[table] != before[table]} == {'deals': 2, 'activities': 1, 'notes': 1, 'audit_log': 4}, (before, after)
+            with item('C3 a later request references an earlier one only through a client-chosen id'):
+                assert bodies[0]['id'] == 'batchdeal000001' and bodies[1]['deal'] == 'batchdeal000001' and bodies[2]['deal'] == 'batchdeal000001', bodies
+                assert request('GET', one('deals', bodies[0]), token=token)['title'] == 'Batch deal'
+                joined = sql("SELECT a.subject, n.body FROM deals d JOIN activities a ON a.deal = d.id JOIN notes n ON n.deal = d.id WHERE d.id = 'batchdeal000001'")
+                assert joined['rows'] == [['Batch call', 'Batch note']], joined
+                before = counts()
+                # Without a client-chosen id the second request has nothing to point at.
+                batch_fails([post('deals', {**batch_deal, 'title': 'No id'}),
+                             post('activities', {**new_activity, 'deal': '@request.0.id'})], 1, 400, ['deal'])
+                batch_fails([post('deals', {**batch_deal, 'id': 'short', 'title': 'Bad id'})], 0, 400, ['id'])
+                batch_fails([post('deals', {**batch_deal, 'id': 'batchdeal000001', 'title': 'Taken id'})], 0, 400, ['id'])
+                assert counts() == before, (before, counts())
+            with item('C9 audit_log rows of a successful batch: one create row per request, the authenticated agent as actor'):
+                for body in bodies:
+                    rows = audit(body['collectionName'], body, 'create')
+                    assert len(rows) == 1 and rows[0]['actor'] == agent['id'] and rows[0]['actor_type'] == 'agent', (body, rows)
+                assert audit('deals', bodies[0], 'create')[0]['changes']['after']['title'] == 'Batch deal'
+                assert audit('activities', bodies[1], 'create')[0]['changes']['after']['deal'] == 'batchdeal000001'
+                [second_org] = batch([post('organizations', {'name': 'Batch by second agent', 'owner': agent['id']})], token2)
+                rows = audit('organizations', second_org, 'create')
+                assert len(rows) == 1 and rows[0]['actor'] == agent2['id'] and rows[0]['actor_type'] == 'agent', rows
+            with item('C2 one failing request fails the whole batch with 400 and its own error; nothing is persisted, including audit rows'):
+                before = counts()
+                batch_fails([post('deals', {**batch_deal, 'id': 'batchdeal000002', 'title': 'Rolled back'}),
+                             post('activities', {**new_activity, 'deal': 'batchdeal000002'}),
+                             post('notes', {'body': 'Orphan', 'owner': agent['id']})], 2, 400, links)
+                absent('deals', 'batchdeal000002')
+                batch_fails([post('deals', {**batch_deal, 'id': 'batchdeal000002', 'title': 'Rolled back', 'currency': 'ZZZ'}),
+                             post('notes', {'body': 'Fine', 'deal': 'batchdeal000002', 'owner': agent['id']})], 0, 400, ['currency'])
+                batch_fails([patch('deals', bodies[0], {'title': 'Rolled back title'}),
+                             patch('deals', bodies[0], {'lost_reason': 'Budget'})], 1, 400, ['lost_reason'])
+                assert request('GET', one('deals', bodies[0]), token=token)['title'] == 'Batch deal'
+                assert counts() == before, (before, counts())
+            with item('C2 B10 an agent DELETE inside a batch fails the batch with 403 for that request'):
+                before = counts()
+                batch_fails([patch('deals', bodies[0], {'title': 'Rolled back title'}),
+                             {'method': 'DELETE', 'url': one('notes', bodies[2])}], 1, 403)
+                batch_fails([{'method': 'DELETE', 'url': one('deals', bodies[0])}], 0, 403)
+                assert request('GET', one('deals', bodies[0]), token=token)['title'] == 'Batch deal'
+                request('GET', one('notes', bodies[2]), token=token)
+                assert counts() == before and tally('audit_log', "action = 'delete'") == 1, (before, counts())
+            with item('C4 two PATCHes of one record in one batch both apply, with one audit row each and no 409'):
+                patched = batch([patch('deals', bodies[0], {'status': 'won'}),
+                                 patch('deals', bodies[0], {'title': 'Batch deal renamed'})])
+                assert patched[0]['status'] == 'won' and recent(patched[0]['closed_at']) and patched[0]['title'] == 'Batch deal', patched
+                assert patched[1]['status'] == 'won' and patched[1]['title'] == 'Batch deal renamed' and patched[1]['closed_at'] == patched[0]['closed_at'], patched
+                stored = request('GET', one('deals', bodies[0]), token=token)
+                assert (stored['status'], stored['title'], stored['closed_at']) == ('won', 'Batch deal renamed', patched[0]['closed_at']), stored
+                rows = audit('deals', bodies[0], 'update')
+                assert len(rows) == 2 and all(row['actor'] == agent['id'] for row in rows), rows
+                assert set(rows[0]['changes']['after']) == {'status', 'closed_at'}, rows
+                assert rows[1]['changes'] == {'before': {'title': 'Batch deal'}, 'after': {'title': 'Batch deal renamed'}}, rows
+            with item('C5 a batch of more than 20 requests is rejected; 20 are accepted'):
+                before = counts()
+                result = request('POST', '/api/batch', {'requests': [post('organizations', {'name': f'Too many {n}', 'owner': agent['id']}) for n in range(21)]}, token, expected=400)
+                assert 'requests' in result['data'] and '20' in json.dumps(result['data']['requests']), result
+                request('POST', '/api/batch', {'requests': []}, token, expected=400)
+                assert counts() == before, (before, counts())
+                assert len(batch([post('organizations', {'name': f'Twenty {n}', 'owner': agent['id']}) for n in range(20)])) == 20
+                assert tally('organizations', "name LIKE 'Twenty %'") == 20 and tally('organizations', "name LIKE 'Too many %'") == 0
+            with item('C6 an unauthenticated batch creates nothing'):
+                before = counts()
+                batch_fails([post('organizations', {'name': 'Anonymous batch', 'owner': agent['id']})], 0, 400, auth=None)
+                batch_fails([post('organizations', {'id': 'batchorg0000001', 'name': 'Anonymous batch', 'owner': agent['id']}),
+                             patch('deals', bodies[0], {'title': 'Anonymous batch'})], 0, 400, auth=None)
+                batch_fails([patch('deals', bodies[0], {'title': 'Anonymous batch'})], 0, 404, auth=None)
+                absent('organizations', 'batchorg0000001')
+                assert request('GET', one('deals', bodies[0]), token=token)['title'] == 'Batch deal renamed'
+                assert counts() == before and tally('organizations', "name = 'Anonymous batch'") == 0, (before, counts())
+            with item('C7 B11 spoofed created_by and updated_by inside a batch are overwritten'):
+                [spoofed] = batch([post('organizations', {'name': 'Batch spoof', 'owner': agent['id'], 'created_by': agent2['id'], 'updated_by': agent2['id']})])
+                assert spoofed['created_by'] == agent['id'] and spoofed['updated_by'] == agent['id'], spoofed
+                [respoofed] = batch([patch('organizations', spoofed, {'name': 'Batch spoof 2', 'created_by': agent2['id'], 'updated_by': agent['id']})], token2)
+                assert respoofed['created_by'] == agent['id'] and respoofed['updated_by'] == agent2['id'], respoofed
+                stored = request('GET', one('organizations', spoofed), token=token)
+                assert stored['created_by'] == agent['id'] and stored['updated_by'] == agent2['id'], stored
+                assert audit('organizations', spoofed, 'update')[0]['actor'] == agent2['id']
+            with item('C8 A9 person and organization must agree when the person is created earlier in the same batch'):
+                before = counts()
+                batch_fails([post('people', {'id': 'batchperson0001', 'name': 'Cy', 'organization': org['id'], 'owner': agent['id']}),
+                             post('deals', {**batch_deal, 'title': 'Batch mismatch', 'person': 'batchperson0001', 'organization': globex['id']})], 1, 400, ['organization'])
+                absent('people', 'batchperson0001')
+                assert counts() == before, (before, counts())
+                cy, cy_deal, cy_note = batch([post('people', {'id': 'batchperson0001', 'name': 'Cy', 'organization': org['id'], 'owner': agent['id']}),
+                                              post('deals', {**batch_deal, 'title': 'Batch match', 'person': 'batchperson0001', 'organization': org['id']}),
+                                              post('notes', {'body': 'Person only', 'person': 'batchperson0001', 'owner': agent['id']})])
+                assert cy['id'] == 'batchperson0001' and cy_deal['person'] == cy['id'] and cy_deal['organization'] == org['id'] and cy_note['person'] == cy['id'], (cy, cy_deal, cy_note)
+                # A person without an organization may be paired with any organization, also inside a batch.
+                dee, dee_deal = batch([post('people', {'id': 'batchperson0002', 'name': 'Dee', 'owner': agent['id']}),
+                                       post('deals', {**batch_deal, 'title': 'Batch unaffiliated', 'person': 'batchperson0002', 'organization': globex['id']})])
+                assert dee_deal['person'] == dee['id'] and dee_deal['organization'] == globex['id'], dee_deal
+                # Moving the person in the same batch changes what the following request is checked against.
+                before = counts()
+                batch_fails([patch('people', cy, {'organization': globex['id']}),
+                             post('activities', {**new_activity, 'person': cy['id'], 'organization': org['id']})], 1, 400, ['organization'])
+                assert request('GET', one('people', cy), token=token)['organization'] == org['id'] and counts() == before
+            with item('C10 A4 A6 unparseable dates inside a batch are rejected before any request runs'):
+                before = counts()
+                for bad in ('09/15/2026', '2026-13-45', 'Sep 15 2026'):
+                    reject('POST', '/api/batch', {'requests': [post('deals', {**batch_deal, 'title': 'Bad batch date', 'status': 'won', 'closed_at': bad})]}, ['closed_at'])
+                    reject('POST', '/api/batch', {'requests': [post('notes', {'body': 'kept out', 'deal': dee_deal['id'], 'owner': agent['id']}), patch('deals', dee_deal, {'expected_close': bad})]}, ['expected_close'])
+                    reject('POST', '/api/batch', {'requests': [post('activities', {**new_activity, 'done': True, 'completed_at': bad})]}, ['completed_at'])
+                assert counts() == before, (before, counts())
             print('PASS: provisioning, CRM BaaS writes, authorization, validation, SQL joins, stage moves, activities, notes, closing deal, '
                   'deal and activity lifecycle rules, server-filled closed_at and completed_at, reopening, ISO 4217 currency, linked notes, '
                   'person and organization consistency, superuser-only deletes, created_by and updated_by stamps, '
                   'append-only audit_log for create, update, and delete, SQL stage history, agents table excluded from SQL, '
-                  'invalid dates rejected, concurrent writes to one record')
+                  'invalid dates rejected, concurrent writes to one record, '
+                  'batch API: ordered results, per-request rules, auto-fill, attribution and audit rows, atomic rollback, client-chosen ids, '
+                  'two PATCHes of one record, 20 request limit, unauthenticated batch, agent DELETE in a batch, '
+                  'person and organization consistency inside a batch')
         except Exception:
             log.flush()
             log.seek(0)

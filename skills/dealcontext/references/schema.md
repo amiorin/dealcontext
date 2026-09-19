@@ -1,6 +1,6 @@
 # Schema
 
-Every CRM record has `id`, `created`, `updated`, `created_by`, and `updated_by`. IDs are PocketBase record IDs. Dates use UTC strings, for example `2026-09-19 14:00:00.000Z`. Missing optional strings, dates, and relations are empty strings, not SQL NULL. Single relations store record IDs.
+Every CRM record has `id`, `created`, `updated`, `created_by`, and `updated_by`. IDs are PocketBase record IDs: 15 characters from `[a-z0-9]`. The server generates one unless a create sends its own `id`, which a batch uses to link new records (see [workflows.md](workflows.md)). Dates use UTC strings, for example `2026-09-19 14:00:00.000Z`. A date-only value such as `2026-12-31` is accepted and stored as midnight UTC. Missing optional numbers are stored as 0 and missing bools as false; in SQL a bool compares as `0` or `1` and comes back as JSON `true` or `false`. Missing optional strings, dates, and relations are empty strings, not SQL NULL. Single relations store record IDs.
 
 | Collection | Fields |
 | --- | --- |
@@ -35,7 +35,7 @@ The server checks these rules on every validated save, from the records API and 
 | notes | at least one of `deal`, `person`, `organization` is set |
 | deals, activities, notes | if `person` and `organization` are both set and the person has an organization, it equals the record's `organization`; a person without an organization passes |
 
-The server fills two values and nothing else. When a request sets a deal's status to `won` or `lost` and `closed_at` is empty, it becomes the current UTC time. When an activity is done and `completed_at` is empty, it becomes the current UTC time. Values you send are kept. Nothing is cleared for you: reopening a deal needs `closed_at` and `lost_reason` cleared in the same PATCH, and setting `done: false` needs `completed_at` cleared in the same PATCH. Send dates as UTC strings in the format above or as RFC 3339. A date value the server cannot parse returns 400; it is never replaced by the current time. Two requests that change the same record at the same time do not overwrite each other: the second gets HTTP 409 and must read the record again and retry.
+The server fills two values and nothing else. When a request sets a deal's status to `won` or `lost` and `closed_at` is empty, it becomes the current UTC time. When an activity is done and `completed_at` is empty, it becomes the current UTC time. Values you send are kept. Nothing is cleared for you: reopening a deal needs `closed_at` and `lost_reason` cleared in the same PATCH, and setting `done: false` needs `completed_at` cleared in the same PATCH. Send dates as UTC strings in the format above or as RFC 3339. A date value the server cannot parse returns 400; it is never replaced by the current time. This check runs before anything else, also for every request of a batch: a batch that contains an unparseable date fails as a whole with a plain 400 that names the field, without a request index. Two requests that change the same record at the same time do not overwrite each other: the second gets HTTP 409 and must read the record again and retry.
 
 ## Deletes
 
@@ -63,4 +63,4 @@ Deletes are superuser-only on all seven CRM collections; an agent DELETE returns
 
 A rejected write leaves no row. The log does not cover everything: when the operator deletes a record, PocketBase clears optional relations that pointed to it (and `created_by`/`updated_by` when an agent account is deleted) without an `audit_log` row, and records that existed before the log was added have no `create` row. Rows are ordered by `created`, which has millisecond resolution, so two writes in the same millisecond have no defined order. A `delete` row keeps the deleted record's full contents readable to every agent. Read values with `json_extract`, for example `json_extract(changes, '$.after.stage')`. Indexes cover (`collection`, `record`, `created`) and (`actor`, `created`).
 
-Discover actual columns using `/api/context/schema`. The migrations are the source of truth. All authenticated agents share access; there is no tenant isolation or row-level SQL policy.
+Discover actual columns using `/api/context/schema` (`dc.py schema`). The server's migrations are the source of truth. `references/schema.json` lists the SQL tables and columns at the time this skill was published, and `dc.py check` compares it with the server. All authenticated agents share access; there is no tenant isolation or row-level SQL policy.

@@ -1,19 +1,14 @@
 # DealContext
 
-DealContext is a shared sales CRM operated through a coding agent. Read `agent/schema.md`, `agent/workflows.md`, and `agent/examples.md` before changing CRM data.
+DealContext is a shared sales CRM operated through a coding agent.
 
-Read CRM data through `GET /api/context/schema` and `POST /api/context/query`. Write only through PocketBase's standard records API. Never modify SQLite directly, use SQL mutations, or change migrations to edit records.
+CRM operation: use the skill in `skills/dealcontext/`. Read `skills/dealcontext/SKILL.md` first; it holds the operating rules, the configuration (`DEALCONTEXT_URL`, `DEALCONTEXT_AGENT_EMAIL`, `DEALCONTEXT_AGENT_PASSWORD`), the client `skills/dealcontext/scripts/dc.py`, and pointers to the schema, workflow, and example references. Use agent credentials only. Superuser access is for provisioning and maintenance by the operator, not for CRM work. Keep passwords and tokens out of source files, logs, and commits.
 
-Get the server URL and agent credentials from the user's environment. Authenticate against the `agents` collection. Keep passwords and tokens out of source files, logs, and commits. Superuser access is for initial provisioning and maintenance, not ordinary CRM work.
+Implementation changes: run both tests against a locally built PocketContext binary. Each uses an isolated temporary database.
 
-All agents share the same workspace and can read and change all CRM records. Ownership is assignment, not an access boundary. Do not claim private per-user visibility.
+```sh
+python3 tests/integration.py --binary /absolute/path/to/pocketcontext
+python3 tests/skill.py --binary /absolute/path/to/pocketcontext
+```
 
-Resolve record IDs before a write. Ask for clarification when names match multiple records. Set explicit status, currency, and owner on deals. Report the result and record IDs after writes. A multi-request workflow can partially succeed: inspect the state before retrying to avoid duplicate activities or notes.
-
-The server rejects writes that break the record rules in `agent/schema.md` with HTTP 400 and a message naming the field and the rule. Read the message, fix the request, and do not retry it unchanged. HTTP 409 means another request changed the record after the server loaded it: read the record again, check that your change still applies, and retry. Do not send `created_by` or `updated_by`; the server sets them from your token and ignores your values. Every create and update you make is recorded in `audit_log` with your agent ID.
-
-Agents cannot delete CRM records; a DELETE returns 403. Mark a mistake instead: close a deal as `lost` with a `lost_reason`, complete an activity and explain in its description, or correct a note. If a record must be removed, such as a duplicate, give the operator the collection and record ID and ask them to delete it with superuser access.
-
-Do not send email, invitations, or other external messages unless the user explicitly requests it. An email activity records CRM work; it does not send an email.
-
-Implementation changes: run `python3 tests/integration.py --binary /absolute/path/to/pocketcontext` against a locally built PocketContext binary. The test uses an isolated temporary database.
+`tests/skill.py` fails when a migration changes the SQL-readable tables or columns. Regenerate the skill's snapshot with `python3 tests/skill.py --binary /absolute/path/to/pocketcontext --write-schema` and update `skills/dealcontext/references/schema.md` to match. Never start a server against `pb_data/` for tests.

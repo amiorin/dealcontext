@@ -1,0 +1,105 @@
+{
+  "tables": [
+    {"name": "activities", "columns": [
+      {"name": "completed_at", "type": "TEXT"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "deal", "type": "TEXT"},
+      {"name": "description", "type": "TEXT"},
+      {"name": "done", "type": "BOOLEAN"},
+      {"name": "due_at", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "kind", "type": "TEXT"},
+      {"name": "organization", "type": "TEXT"},
+      {"name": "owner", "type": "TEXT"},
+      {"name": "person", "type": "TEXT"},
+      {"name": "subject", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"}
+    ]},
+    {"name": "audit_log", "columns": [
+      {"name": "action", "type": "TEXT"},
+      {"name": "actor", "type": "TEXT"},
+      {"name": "actor_type", "type": "TEXT"},
+      {"name": "changes", "type": "JSON"},
+      {"name": "collection", "type": "TEXT"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "record", "type": "TEXT"}
+    ]},
+    {"name": "deals", "columns": [
+      {"name": "closed_at", "type": "TEXT"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "currency", "type": "TEXT"},
+      {"name": "expected_close", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "lost_reason", "type": "TEXT"},
+      {"name": "organization", "type": "TEXT"},
+      {"name": "owner", "type": "TEXT"},
+      {"name": "person", "type": "TEXT"},
+      {"name": "stage", "type": "TEXT"},
+      {"name": "status", "type": "TEXT"},
+      {"name": "title", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"},
+      {"name": "value_minor", "type": "NUMERIC"}
+    ]},
+    {"name": "notes", "columns": [
+      {"name": "body", "type": "TEXT"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "deal", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "organization", "type": "TEXT"},
+      {"name": "owner", "type": "TEXT"},
+      {"name": "person", "type": "TEXT"},
+      {"name": "source_url", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"}
+    ]},
+    {"name": "organizations", "columns": [
+      {"name": "address", "type": "TEXT"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "name", "type": "TEXT"},
+      {"name": "owner", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"},
+      {"name": "website", "type": "TEXT"}
+    ]},
+    {"name": "people", "columns": [
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "email", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "name", "type": "TEXT"},
+      {"name": "organization", "type": "TEXT"},
+      {"name": "owner", "type": "TEXT"},
+      {"name": "phone", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"}
+    ]},
+    {"name": "pipelines", "columns": [
+      {"name": "active", "type": "BOOLEAN"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "name", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"}
+    ]},
+    {"name": "stages", "columns": [
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "name", "type": "TEXT"},
+      {"name": "pipeline", "type": "TEXT"},
+      {"name": "position", "type": "NUMERIC"},
+      {"name": "probability", "type": "NUMERIC"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"}
+    ]}
+  ]
+}

@@ -7,6 +7,8 @@ onRecordValidate((e) => {
   require(`${__hooks}/integrity.js`).validate(e.app, e.record);
 }, "deals", "activities", "notes");
 
+routerUse((e) => require(`${__hooks}/integrity.js`).dates(e));
+
 onRecordCreateRequest((e) => require(`${__hooks}/integrity.js`).write(e),
   "organizations", "people", "pipelines", "stages", "deals", "activities", "notes");
 onRecordUpdateRequest((e) => require(`${__hooks}/integrity.js`).write(e),

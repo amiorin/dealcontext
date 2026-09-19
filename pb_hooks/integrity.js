@@ -12,6 +12,7 @@ const CURRENCIES = ("AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD
 
 // Custom (non-column) record key that carries the API actor from the request hook to the execute hook.
 const ACTOR_KEY = "_audit_actor";
+const CRM = ["organizations", "people", "pipelines", "stages", "deals", "activities", "notes"];
 
 // Runs after the built-in field validation, so relation ids and formats are already known to be valid.
 function validate(app, record) {
@@ -56,6 +57,31 @@ function validate(app, record) {
   if (messages.length) throw new BadRequestError(messages.join("; "), errors);
 }
 
+// Router middleware. PocketBase casts an unparseable date to empty while loading the record, so by the time the record
+// hooks run the sent value is gone. Check date fields on the still-raw body here, for single writes and for every
+// request of a batch, and reject a bad value instead of storing empty or filling the current time.
+function dates(e) {
+  const method = e.request.method, path = e.request.url.path, writes = [];
+  if (method === "POST" && path === "/api/batch") {
+    for (const item of e.requestInfo().body.requests || []) writes.push([item.url, item.body]);
+  } else if ((method === "POST" || method === "PATCH") && path.startsWith("/api/collections/")) {
+    writes.push([path, e.requestInfo().body]);
+  }
+  for (const [url, body] of writes) {
+    const match = /^\/api\/collections\/([^\/?]+)\/records/.exec(String(url || ""));
+    if (!match || !body || !CRM.includes(match[1])) continue;
+    for (const field of e.app.findCachedCollectionByNameOrId(match[1]).fields) {
+      const value = body[field.name];
+      if (field.type() !== "date" || value === undefined || value === null || String(value).trim() === "") continue;
+      if (new DateTime(String(value)).isZero()) {
+        const message = field.name + " is not a valid date";
+        throw new BadRequestError(message, {[field.name]: new ValidationError("validation_invalid_date", message)});
+      }
+    }
+  }
+  return e.next();
+}
+
 // Create and update request hook: attribution, the two documented auto-fills, then the save in an audited transaction.
 function write(e) {
   const record = e.record, name = record.collection().name, agent = agentId(e);
@@ -66,18 +92,6 @@ function write(e) {
   const now = new Date().toISOString().replace("T", " ");
   const body = e.requestInfo().body;
   const sent = (field) => Object.prototype.hasOwnProperty.call(body, field);
-  // PocketBase casts an unparseable date to empty, also in requestInfo().body, so compare with the raw JSON body.
-  // Reject such a value instead of storing empty or filling the current time. Non-JSON bodies skip this check.
-  let raw = {};
-  try {
-    raw = JSON.parse(toString(e.requestEvent.request.body)) || {};
-  } catch (_) {}
-  for (const field of record.collection().fields.fieldNames()) {
-    if (record.collection().fields.getByName(field).type() !== "date" || raw[field] === undefined || raw[field] === null) continue;
-    if (String(raw[field]).trim() !== "" && record.getString(field) === "") {
-      throw new BadRequestError(field + " is not a valid date", {[field]: new ValidationError("validation_invalid_date", field + " is not a valid date")});
-    }
-  }
   if (name === "deals" && sent("status") && record.getString("status") !== "open" && record.getString("closed_at") === "") {
     record.set("closed_at", now);
   }
@@ -152,4 +166,4 @@ function audit(e, action) {
   e.app.save(row);
 }
 
-module.exports = {validate, write, audited, audit};
+module.exports = {validate, dates, write, audited, audit};
