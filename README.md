@@ -112,7 +112,7 @@ The workflow `.github/workflows/image.yml` builds and checks the image on every 
 
 ### Variables
 
-ONCE injects `BASE_URL`, `SMTP_ADDRESS`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `MAILER_FROM_ADDRESS`. On every start the server copies the ones that are set into the PocketBase settings (application URL, sender address, SMTP). `BASE_URL` is also the only allowed CORS origin. All other values arrive through the `env:` mapping below.
+ONCE injects `BASE_URL`, `SMTP_ADDRESS`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `MAILER_FROM_ADDRESS`. On every start the server copies the ones that are set into the PocketBase settings (application URL, sender address, SMTP). `BASE_URL` is also the only allowed CORS origin. ONCE passes `BASE_URL` from v0.3.3; on an older ONCE the entrypoint logs a warning, links in emails point to localhost, and every browser origin is allowed, so upgrade ONCE or map `BASE_URL` under `env`, which overrides the injected value. `MAILER_FROM_ADDRESS` may be a bare address or `Name <address>`, which is the form the Colors package sends; the name goes to the sender name and the address to the sender address. All other values arrive through the `env:` mapping below.
 
 | Variable | Meaning |
 | --- | --- |

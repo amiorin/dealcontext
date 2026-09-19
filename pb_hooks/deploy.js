@@ -46,11 +46,17 @@ function settings(app) {
     }
   };
 
+  // Separate groups: a sender that PocketBase rejects must not keep the application URL from being applied.
   const url = env("BASE_URL"), sender = env("MAILER_FROM_ADDRESS");
-  if (url || sender) {
-    group("application URL and sender", "BASE_URL " + (url ? "set" : "unset") + ", MAILER_FROM_ADDRESS " + (sender ? "set" : "unset"), (set) => {
-      if (url) set("meta", "appURL", url.replace(/\/+$/, ""));
-      if (sender) set("meta", "senderAddress", sender);
+  if (url) {
+    group("application URL", "BASE_URL " + url, (set) => set("meta", "appURL", url.replace(/\/+$/, "")));
+  }
+  if (sender) {
+    // ONCE passes the value as given; the Colors package sends "Name <address>", PocketBase stores the two apart.
+    const named = /^\s*"?([^"<]*?)"?\s*<([^<>\s]+)>\s*$/.exec(sender);
+    group("sender", "MAILER_FROM_ADDRESS set", (set) => {
+      set("meta", "senderAddress", named ? named[2] : sender.trim());
+      if (named && named[1]) set("meta", "senderName", named[1]);
     });
   }
 

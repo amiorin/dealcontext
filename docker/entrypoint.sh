@@ -39,6 +39,9 @@ serve() {
 		AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY DEALCONTEXT_SUPERUSER_PASSWORD
 	# shellcheck disable=SC2046 # app_flags prints one flag per line and no value contains whitespace
 	set -- serve --http=0.0.0.0:80 $(app_flags)
+	if [ -z "${BASE_URL:-}" ]; then
+		log "warning: BASE_URL is not set, so links in emails point to localhost and every browser origin is allowed. ONCE passes it from v0.3.3; on an older ONCE, upgrade it or map BASE_URL in the application's env."
+	fi
 	if [ -n "${BASE_URL:-}" ]; then
 		# CORS: agents use no browser and the dashboard is same-origin, so only the
 		# application's own origin is allowed. An origin has no trailing slash.

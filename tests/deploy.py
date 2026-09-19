@@ -97,7 +97,7 @@ def main():
     clean = {key: value for key, value in os.environ.items() if key not in CONTRACT}
     mailbox = Mailbox()
     contract = {
-        'BASE_URL': 'https://crm.example.test/', 'MAILER_FROM_ADDRESS': 'crm@example.test',
+        'BASE_URL': 'https://crm.example.test/', 'MAILER_FROM_ADDRESS': 'Info <info@notifications.example.test>',
         'SMTP_ADDRESS': '127.0.0.1', 'SMTP_PORT': str(mailbox.server_address[1]),
         'SMTP_USERNAME': 'mailer', 'SMTP_PASSWORD': SMTP_PASSWORD,
         'DEALCONTEXT_TRUSTED_PROXY_HEADER': 'X-Forwarded-For', 'DEALCONTEXT_RATE_LIMITS': 'true',
@@ -174,7 +174,7 @@ def main():
                                     check=True, capture_output=True, text=True)
             output = upsert.stdout + upsert.stderr
             with item('D2 one log line per applied group, without secret values'):
-                assert output.count('deploy: applied') == 4, output
+                assert output.count('deploy: applied') == 5, output
                 assert SMTP_PASSWORD not in output and ADMIN_PASSWORD not in output, 'a secret reached the command output'
 
             start('first', contract)
@@ -185,7 +185,7 @@ def main():
             with item('D2 settings match the environment'):
                 settings = request('GET', '/api/settings', token=admin)
                 assert settings['meta']['appURL'] == 'https://crm.example.test', settings['meta']
-                assert settings['meta']['senderAddress'] == 'crm@example.test', settings['meta']
+                assert (settings['meta']['senderName'], settings['meta']['senderAddress']) == ('Info', 'info@notifications.example.test'), settings['meta']
                 smtp = settings['smtp']
                 assert 'password' not in smtp, sorted(smtp)
                 assert (smtp['enabled'], smtp['host'], smtp['port'], smtp['username'], smtp['tls']) == (True, '127.0.0.1', mailbox.server_address[1], 'mailer', False), \
@@ -196,7 +196,7 @@ def main():
             with item('D2 the SMTP password and the sender are in use'):
                 message = send_test_email(admin)
                 assert message['password'] == SMTP_PASSWORD, 'the SMTP password sent to the mail server differs from SMTP_PASSWORD'
-                assert (message['username'], message['from'], message['to']) == ('mailer', 'crm@example.test', 'inbox@example.test'), \
+                assert (message['username'], message['from'], message['to']) == ('mailer', 'info@notifications.example.test', 'inbox@example.test'), \
                     {key: value for key, value in message.items() if key != 'password'}
 
             def agent(number, ip):
