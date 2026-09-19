@@ -1,11 +1,12 @@
 /// <reference path="../pb_data/types.d.ts" />
 // Helpers for deploy.pb.js. Every hook handler runs in its own runtime, so handlers load this with require().
 
-// First match wins among prefix labels, so "/api/context/" stays before "/api/". "/up" matches no rule.
+// First match wins among prefix labels, so "/api/context/" and "/api/intake/" stay before "/api/". "/up" matches no rule.
 const RULES = [
   {label: "*:auth", audience: "", duration: 60, maxRequests: 10},
   {label: "/api/batch", audience: "", duration: 10, maxRequests: 10},
   {label: "/api/context/", audience: "", duration: 10, maxRequests: 60},
+  {label: "/api/intake/", audience: "", duration: 60, maxRequests: 5},
   {label: "/api/", audience: "", duration: 10, maxRequests: 300},
 ];
 

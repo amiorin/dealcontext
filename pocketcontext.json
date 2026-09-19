@@ -8,6 +8,7 @@
     "deals": [],
     "activities": [],
     "notes": [],
+    "enquiries": [],
     "audit_log": []
   },
   "timeoutMs": 2000,

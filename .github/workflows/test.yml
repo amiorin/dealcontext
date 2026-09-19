@@ -41,3 +41,5 @@ jobs:
         run: python3 dealcontext/tests/skill.py --binary pocketcontext/bin/pocketcontext
       - name: Test deployment hooks
         run: python3 dealcontext/tests/deploy.py --binary pocketcontext/bin/pocketcontext
+      - name: Test public enquiry intake
+        run: python3 dealcontext/tests/intake.py --binary pocketcontext/bin/pocketcontext

@@ -45,6 +45,22 @@
       {"name": "updated_by", "type": "TEXT"},
       {"name": "value_minor", "type": "NUMERIC"}
     ]},
+    {"name": "enquiries", "columns": [
+      {"name": "created", "type": "TEXT"},
+      {"name": "deal", "type": "TEXT"},
+      {"name": "details", "type": "JSON"},
+      {"name": "email", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "name", "type": "TEXT"},
+      {"name": "person", "type": "TEXT"},
+      {"name": "source", "type": "TEXT"},
+      {"name": "status", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"},
+      {"name": "utm_campaign", "type": "TEXT"},
+      {"name": "utm_medium", "type": "TEXT"},
+      {"name": "utm_source", "type": "TEXT"}
+    ]},
     {"name": "notes", "columns": [
       {"name": "body", "type": "TEXT"},
       {"name": "created", "type": "TEXT"},

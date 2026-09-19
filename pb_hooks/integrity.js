@@ -13,6 +13,8 @@ const CURRENCIES = ("AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD
 // Custom (non-column) record key that carries the API actor from the request hook to the execute hook.
 const ACTOR_KEY = "_audit_actor";
 const CRM = ["organizations", "people", "pipelines", "stages", "deals", "activities", "notes"];
+// Collections that hold public input: only these fields reach audit_log, so the log keeps no submitted values.
+const AUDITED = {enquiries: {update: ["status", "person", "deal"], delete: ["status"]}};
 
 // Runs after the built-in field validation, so relation ids and formats are already known to be valid.
 function validate(app, record) {
@@ -47,6 +49,9 @@ function validate(app, record) {
   }
   if (name === "notes" && empty("deal") && empty("person") && empty("organization")) {
     fail(["deal", "person", "organization"], "validation_required", "at least one of deal, person, organization must be set");
+  }
+  if (name === "enquiries" && record.getString("status") === "qualified" && empty("person")) {
+    fail(["person"], "validation_required", "person must be set when status is qualified");
   }
   if (!empty("person") && !empty("organization")) {
     const expected = app.findRecordById("people", record.getString("person")).getString("organization");
@@ -86,7 +91,9 @@ function dates(e) {
 function write(e) {
   const record = e.record, name = record.collection().name, agent = agentId(e);
   if (agent) {
-    record.set("created_by", record.isNew() ? agent : record.original().getString("created_by"));
+    if (record.collection().fields.getByName("created_by")) {
+      record.set("created_by", record.isNew() ? agent : record.original().getString("created_by"));
+    }
     record.set("updated_by", agent);
   }
   const now = new Date().toISOString().replace("T", " ");
@@ -129,10 +136,11 @@ function agentId(e) {
   return e.auth && e.auth.collection().name === "agents" ? e.auth.id : "";
 }
 
-function snapshot(record, skip) {
+function snapshot(record, skip, action) {
   const all = JSON.parse(JSON.stringify(record)), out = {};
+  const only = (AUDITED[record.collection().name] || {})[action];
   for (const field of record.collection().fields.fieldNames()) {
-    if (!skip.includes(field)) out[field] = all[field];
+    if (!skip.includes(field) && (!only || only.includes(field))) out[field] = all[field];
   }
   return out;
 }
@@ -144,7 +152,7 @@ function audit(e, action) {
   e.record.set(ACTOR_KEY, "");
   let changes;
   if (action === "update") {
-    const before = snapshot(e.record.original(), []), after = snapshot(e.record, []);
+    const before = snapshot(e.record.original(), [], action), after = snapshot(e.record, [], action);
     changes = {before: {}, after: {}};
     for (const field in after) {
       if (field === "updated" || field === "updated_by" || JSON.stringify(before[field]) === JSON.stringify(after[field])) continue;
@@ -153,7 +161,7 @@ function audit(e, action) {
     }
     if (Object.keys(changes.after).length === 0) return e.next();
   }
-  if (action === "delete") changes = {before: snapshot(e.record, [])};
+  if (action === "delete") changes = {before: snapshot(e.record, [], action)};
   e.next();
   if (action === "create") changes = {after: snapshot(e.record, ["id", "created", "updated"])};
   const row = new Record(e.app.findCollectionByNameOrId("audit_log"));

@@ -24,6 +24,7 @@ RULES = [
     {'label': '*:auth', 'audience': '', 'duration': 60, 'maxRequests': 10},
     {'label': '/api/batch', 'audience': '', 'duration': 10, 'maxRequests': 10},
     {'label': '/api/context/', 'audience': '', 'duration': 10, 'maxRequests': 60},
+    {'label': '/api/intake/', 'audience': '', 'duration': 60, 'maxRequests': 5},
     {'label': '/api/', 'audience': '', 'duration': 10, 'maxRequests': 300},
 ]
 
