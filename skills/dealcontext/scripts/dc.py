@@ -26,6 +26,7 @@ SCHEMA_FILE = Path(__file__).resolve().parent.parent / 'references' / 'schema.js
 STAMPS = ('created_by', 'updated_by')
 ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 TIMEOUT = 30
+USER_AGENT = 'DealContext/1.0'
 hidden = []  # The password and tokens. say() masks them in everything it prints.
 
 
@@ -102,7 +103,7 @@ opener = urllib.request.build_opener(NoRedirect)
 
 def send(cfg, method, path, body=None, token=None):
     """Send one request. Returns (status, parsed JSON body, or the text when it is not JSON)."""
-    headers = {'Content-Type': 'application/json'}
+    headers = {'Content-Type': 'application/json', 'User-Agent': USER_AGENT}
     if token:
         headers['Authorization'] = token
     data = None if body is None else json.dumps(body).encode()

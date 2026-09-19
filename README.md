@@ -75,6 +75,9 @@ python3 scripts/dc.py check    # exit 0: the skill's schema snapshot matches the
 
 `dc.py` uses only the Python standard library. It caches the login token in `$XDG_CACHE_HOME/dealcontext/` (default `~/.cache/dealcontext/`) with mode 0600, never prints the password or token, and has no delete command. `dc.py logout` removes the cached token. When `check` reports differences, the server is newer or older than the installed skill: the live schema is authoritative, and updating the skill brings the reference files back in line.
 
+The client sends `User-Agent: DealContext/1.0` on every request, including login.
+This identifies agent traffic to proxies that reject Python's generic user-agent.
+
 ## Data and permissions
 
 The seven CRM collections, `enquiries`, and `audit_log` are SQL-readable. Auth and internal tables are excluded. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.

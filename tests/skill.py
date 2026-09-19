@@ -120,6 +120,24 @@ class Conflict(BaseHTTPRequestHandler):
         pass
 
 
+class ClientIdentityGate(Conflict):
+    """Model an edge filter that rejects the generic Python user-agent."""
+    requests = []
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        agent = self.headers.get('User-Agent', '')
+        ClientIdentityGate.requests.append((self.path, agent, self.headers.get('Authorization')))
+        if agent != 'DealContext/1.0':
+            self.reply(403, {'message': 'Client identification required'})
+        elif self.path.endswith('/auth-with-password'):
+            self.reply(200, {'token': 'identity-test-token-0123456789', 'record': {'id': 'identityagent01'}})
+        elif self.path == '/api/context/query' and self.headers.get('Authorization') == 'identity-test-token-0123456789':
+            self.reply(200, {'columns': ['1'], 'rows': [[1]], 'truncated': False})
+        else:
+            self.reply(401, {'message': 'Authentication required'})
+
+
 def frontmatter(text):
     """Parse the simple `key: value` frontmatter of SKILL.md. Values must be plain one-line YAML scalars."""
     lines = text.split('\n')
@@ -360,6 +378,24 @@ def main():
             before = session_file.read_text()
             dc('create', 'notes', json.dumps({'body': 'Orphan', 'owner': me['id']}), expect=1, DEALCONTEXT_AGENT_PASSWORD='wrong-password')
             assert session_file.read_text() == before
+
+        with item('login and authenticated requests identify the DealContext client through an edge filter'):
+            stub = HTTPServer(('127.0.0.1', 0), ClientIdentityGate)
+            thread = threading.Thread(target=stub.serve_forever, daemon=True)
+            thread.start()
+            try:
+                stub_url = f'http://127.0.0.1:{stub.server_port}'
+                result = out('sql', 'SELECT 1', DEALCONTEXT_URL=stub_url, XDG_CACHE_HOME=str(tmp / 'identity-cache'))
+                assert result['rows'] == [[1]], result
+                assert ClientIdentityGate.requests == [
+                    ('/api/collections/agents/auth-with-password', 'DealContext/1.0', None),
+                    ('/api/context/query', 'DealContext/1.0', 'identity-test-token-0123456789'),
+                ], ClientIdentityGate.requests
+                tokens.add('identity-test-token-0123456789')
+            finally:
+                stub.shutdown()
+                stub.server_close()
+                thread.join()
 
         with item('HTTP 409 exits 4, also inside a batch (stub server: the real 409 needs two racing writes)'):
             stub = HTTPServer(('127.0.0.1', 0), Conflict)
