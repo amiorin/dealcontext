@@ -1,0 +1,15 @@
+{
+  "authCollection": "agents",
+  "tables": {
+    "organizations": [],
+    "people": [],
+    "pipelines": [],
+    "stages": [],
+    "deals": [],
+    "activities": [],
+    "notes": []
+  },
+  "timeoutMs": 2000,
+  "maxRows": 500,
+  "maxBytes": 1048576
+}

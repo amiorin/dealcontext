@@ -1,0 +1,34 @@
+name: CRM integration
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dealcontext
+      - name: Read server revision
+        id: server
+        shell: bash
+        run: |
+          revision=$(cat dealcontext/POCKETCONTEXT_VERSION)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: amiorin/pocketcontext
+          ref: ${{ steps.server.outputs.revision }}
+          path: pocketcontext
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pocketcontext/go.mod
+          cache-dependency-path: pocketcontext/go.sum
+      - name: Build server
+        working-directory: pocketcontext
+        run: CGO_ENABLED=1 go build -o bin/pocketcontext ./cmd/pocketcontext
+      - name: Test CRM
+        run: python3 dealcontext/tests/integration.py --binary pocketcontext/bin/pocketcontext
