@@ -19,7 +19,7 @@ Build PocketContext using the Go version in its `go.mod` and a C compiler. The S
 ```sh
 cd ../pocketcontext
 git checkout "$(cat ../dealcontext/POCKETCONTEXT_VERSION)"
-CGO_ENABLED=1 go build -o bin/pocketcontext ./cmd/pocketcontext
+CGO_ENABLED=1 go build -tags sqlite_math_functions -o bin/pocketcontext ./cmd/pocketcontext   # the flags of its Makefile; `make build` does the same
 cd ../dealcontext
 ../pocketcontext/bin/pocketcontext serve --http=127.0.0.1:8090 \
   --dir=./pb_data --migrationsDir=./pb_migrations --hooksDir=./pb_hooks \
@@ -104,14 +104,109 @@ Rules outside this list remain agent conventions documented in [workflows](skill
 
 See [schema](skills/dealcontext/references/schema.md), [workflows](skills/dealcontext/references/workflows.md), and [examples](skills/dealcontext/references/examples.md). Back up the data directory using PocketBase's supported backup procedure before upgrades. Review and test migration changes before applying them to a live CRM.
 
+## Deploy with ONCE
+
+The `Dockerfile` builds an image for [Basecamp ONCE](https://github.com/basecamp/once): HTTP on port 80, `GET /up` for the health check, and all state in the `/storage` volume (`/storage/pb_data`). The build stage compiles PocketContext at the commit in `POCKETCONTEXT_VERSION`. The runtime stage adds `pb_migrations/`, `pb_hooks/`, `pocketcontext.json`, and Litestream 0.5.17. `tini` is PID 1 and runs `docker/entrypoint.sh`, which restores the database when the volume is empty, upserts the superuser, and starts Litestream; Litestream starts the server, forwards the stop signal to it, and makes a final sync after the server has exited. The container runs as root, because ONCE creates and mounts `/storage` and offers no option to set its owner or the container's user.
+
+The workflow `.github/workflows/image.yml` builds and checks the image on every push and pull request. On `main` it also publishes `ghcr.io/amiorin/dealcontext:latest` and `:sha-<short commit>` for `linux/amd64` and `linux/arm64`, then pings the server. ONCE has no registry login: after the first publication, open the package settings on GitHub and change the visibility of `dealcontext` to public.
+
+### Variables
+
+ONCE injects `BASE_URL`, `SMTP_ADDRESS`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `MAILER_FROM_ADDRESS`. On every start the server copies the ones that are set into the PocketBase settings (application URL, sender address, SMTP). `BASE_URL` is also the only allowed CORS origin. All other values arrive through the `env:` mapping below.
+
+| Variable | Meaning |
+| --- | --- |
+| `DEALCONTEXT_SUPERUSER_EMAIL`, `DEALCONTEXT_SUPERUSER_PASSWORD` | The entrypoint runs `superuser upsert` on every start when both are set. One without the other is a startup error. |
+| `DEALCONTEXT_TRUSTED_PROXY_HEADER` | Header that holds the client address, see below. Unset: the stored setting is left alone. |
+| `DEALCONTEXT_RATE_LIMITS` | `true` enables the rate limits, `false` disables them. The image sets `true`. |
+| `LITESTREAM_BUCKET`, `LITESTREAM_PATH`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY` | Required. The S3 replica of `/storage/pb_data/data.db`. A missing one is a startup error that names it. |
+| `LITESTREAM_REGION`, `LITESTREAM_ENDPOINT` | Region and, for a service other than AWS S3, the endpoint URL. |
+| `LITESTREAM_SYNC_INTERVAL` | Default `10s`. |
+| `LITESTREAM_DISABLED` | Exactly `true` runs the server without Litestream. Then no replication variable is required, and the volume is the only copy. |
+
+The rate limits, per client address: `*:auth` 10 requests per 60 seconds, `/api/batch` 10 per 10 seconds, `/api/context/` 60 per 10 seconds, `/api/` 300 per 10 seconds. `/up` matches no rule.
+
+### colors.yml
+
+The [Colors ONCE package](https://github.com/getcolors/once) deploys the image. `env` maps a container variable to a flat parameter key. The value is never written in `colors.yml`; it arrives in the environment of the Colors run as `COLORS_PAR_` plus the key in upper case with underscores.
+
+```yaml
+profile: production
+once:
+  applications:
+    - host: crm.example.com
+      image: ghcr.io/amiorin/dealcontext:latest
+      github: amiorin/dealcontext
+      env:
+        DEALCONTEXT_SUPERUSER_EMAIL: app-dealcontext-superuser-email
+        DEALCONTEXT_SUPERUSER_PASSWORD: app-dealcontext-superuser-password
+        DEALCONTEXT_TRUSTED_PROXY_HEADER: app-dealcontext-trusted-proxy-header
+        LITESTREAM_BUCKET: app-dealcontext-litestream-bucket
+        LITESTREAM_PATH: app-dealcontext-litestream-path
+        LITESTREAM_REGION: app-dealcontext-litestream-region
+        LITESTREAM_ENDPOINT: app-dealcontext-litestream-endpoint
+        LITESTREAM_ACCESS_KEY_ID: app-dealcontext-litestream-access-key-id
+        LITESTREAM_SECRET_ACCESS_KEY: app-dealcontext-litestream-secret-access-key
+        # Optional. Leave a line out to keep the default.
+        LITESTREAM_SYNC_INTERVAL: app-dealcontext-litestream-sync-interval
+        DEALCONTEXT_RATE_LIMITS: app-dealcontext-rate-limits
+        LITESTREAM_DISABLED: app-dealcontext-litestream-disabled
+```
+
+```sh
+export COLORS_PAR_APP_DEALCONTEXT_SUPERUSER_EMAIL=operator@example.com
+export COLORS_PAR_APP_DEALCONTEXT_SUPERUSER_PASSWORD=...            # from a secret store
+export COLORS_PAR_APP_DEALCONTEXT_TRUSTED_PROXY_HEADER=CF-Connecting-IP
+export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_BUCKET=example-dealcontext
+export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_PATH=production/dealcontext
+export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_REGION=auto
+export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_ENDPOINT=https://ACCOUNT_ID.r2.cloudflarestorage.com
+export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_ACCESS_KEY_ID=...
+export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_SECRET_ACCESS_KEY=...
+```
+
+How Colors treats a mapped key that has no value was not checked here, so list only the keys you set.
+
+Cloudflare R2: the endpoint is `https://ACCOUNT_ID.r2.cloudflarestorage.com`, the region is `auto`, and the key pair is an R2 API token with object read and write permission on the bucket. Create the bucket first; Litestream does not create it, and a missing bucket stops the container at startup. Put the profile in `LITESTREAM_PATH` (`production/dealcontext`), so that two profiles can share a bucket. Never give two servers the same bucket and path: both would write one replica, and a restore from it cannot be trusted. The replica is the whole database, including password hashes and the SMTP password stored in the settings, so keep the bucket private.
+
+Trusted proxy header: PocketBase uses it for the client address in the rate limits and the request log. When the DNS record is proxied by Cloudflare and `compute-http-sources` admits only Cloudflare's address ranges, choose `CF-Connecting-IP`. Otherwise choose `X-Forwarded-For`; PocketBase takes the rightmost address, the one added by the nearest proxy. `CF-Connecting-IP` on a server that also accepts direct connections lets a client choose its own address. Without a header every request appears to come from the proxy and shares one rate limit bucket.
+
+Superuser and dashboard: the PocketBase dashboard at `/_/` is reachable on the public host. It is protected by the superuser login and by the `*:auth` rate limit; no second factor is configured. Use a long random password. Because the entrypoint upserts the superuser on every start, a password changed in the dashboard lasts until the next start: change the Colors parameter instead. When the two variables are not set and the database has no superuser, PocketBase prints a one-time installation link with a token to the container log.
+
+Continuous deployment: `colors.yml` names `github: amiorin/dealcontext`, so `create` publishes `SSH_PRIVATE_KEY`, `SERVER_IP`, `SERVER_USER`, and `SSH_KNOWN_HOSTS` to the GitHub environment named after the profile. The `deploy` job reads the environment name from the repository variable `COLORS_PROFILE` and is skipped while that variable is empty. After `create` has run once:
+
+```sh
+gh variable set COLORS_PROFILE --repo amiorin/dealcontext --body production
+```
+
+The job opens an SSH connection and sends no command. The deploy key's forced command on the server pulls `:latest` and updates the application.
+
+### Restore drill
+
+Replication is checked, not assumed. The `check` job of `image.yml` runs `docker/smoke.py restore`: it starts MinIO as the S3 service, starts the image with the `LITESTREAM_*` variables, creates an agent and records, kills the container, removes the container and its volume, and starts a new container on an empty volume. The agent must log in, SQL reads must return the records, and Litestream's integrity check of the restored database must pass. A second round writes a record immediately before `docker stop` with a one hour sync interval, so only the final sync at shutdown can save it, and restores again. The same happens on a real server: a new server with an empty volume and the same `LITESTREAM_*` values restores the database on its first start. Stop the old server first. A restore that fails, for example because of rejected credentials or a missing bucket, stops the container; it never starts on an empty database next to an existing replica. While the bucket cannot be reached, Litestream keeps retrying and the server does not start.
+
+Open risk, not verified: `once update` may run the new container while the old one is still stopping. For a few seconds two servers would then use one SQLite file and two Litestream processes would write one replica. Until this is checked on a real ONCE server, make a backup before an update that matters, and run the drill above against the production replica from time to time.
+
+With Docker installed, the same checks run locally:
+
+```sh
+docker build -t dealcontext:ci .
+python3 docker/smoke.py config --image dealcontext:ci    # startup errors for missing configuration
+python3 docker/smoke.py smoke --image dealcontext:ci     # start, provision an agent, dc.py whoami, check, batch, stop, start again
+python3 docker/smoke.py restore --image dealcontext:ci   # the restore drill
+```
+
 ## Verify
 
 ```sh
 python3 tests/integration.py --binary ../pocketcontext/bin/pocketcontext
 python3 tests/skill.py --binary ../pocketcontext/bin/pocketcontext
+python3 tests/deploy.py --binary ../pocketcontext/bin/pocketcontext
 ```
 
 The integration test creates a temporary database, provisions two agents, and exercises contact creation, stage changes, follow-ups, notes, deal closure, SQL joins, permissions, and field validation. It also checks each server rule above with a rejected and an accepted write, superuser-only deletes, `created_by` and `updated_by` stamping, the `audit_log` rows for creates, updates, and deletes, and the batch API. It deletes its temporary state when finished.
+
+The deployment test starts a server with the variables of the deployment contract and checks `/up`, the settings taken from the environment, the trusted proxy header, the rate limits per forwarded client address, a later start without the variables, and the agent password rules of the security migration. The container image has its own checks, see [Deploy with ONCE](#deploy-with-once).
 
 The skill test checks the skill's frontmatter and links, copies `skills/dealcontext` to a temporary directory outside the repository, and runs `dc.py` there against a temporary server with a temporary `HOME`: configuration errors, the token cache, every command, batch success and failure, recovery from a rejected token, exit codes, and that the password and token never reach the output. Its `check` step fails when a migration changes the SQL-readable tables or columns. Regenerate the snapshot and review the reference files:
 
