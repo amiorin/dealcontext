@@ -48,7 +48,7 @@ jobs:
       - name: Restore drill
         run: python3 docker/smoke.py restore --image dealcontext:ci
 
-  # Main only, from here on (a push, or a manual run on main). The three Python tests gate the publication.
+  # Main only, from here on (a push, or a manual run on main). The four Python tests gate the publication.
   tests:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     uses: ./.github/workflows/test.yml
@@ -192,3 +192,10 @@ jobs:
           # A ping, not a command. Connect to SERVER_IP: the pinned host key is keyed on the address.
           # The exit status is the deploy result for every host this key owns.
           ssh -T -o StrictHostKeyChecking=yes "$SERVER_USER@$SERVER_IP" < /dev/null
+      - name: Verify public health
+        run: |
+          # /up executes a database query, so HTTP 200 also checks database availability.
+          curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 20 \
+            --retry 12 --retry-delay 5 --retry-max-time 180 --retry-all-errors \
+            https://crm.pocketcontext.com/up

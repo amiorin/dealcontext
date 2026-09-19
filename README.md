@@ -245,19 +245,28 @@ Trusted proxy header: PocketBase uses it for the client address in the rate limi
 
 Superuser and dashboard: the PocketBase dashboard at `/_/` is reachable on the public host. It is protected by the superuser login and by the `*:auth` rate limit; no second factor is configured. Use a long random password. Because the entrypoint upserts the superuser on every start, a password changed in the dashboard lasts until the next start: change the Colors parameter instead. When the two variables are not set and the database has no superuser, PocketBase prints a one-time installation link with a token to the container log.
 
-Continuous deployment: `colors.yml` names `github: pocketcontext/dealcontext`, so `create` publishes `SSH_PRIVATE_KEY`, `SERVER_IP`, `SERVER_USER`, and `SSH_KNOWN_HOSTS` to the GitHub environment named after the profile. The `deploy` job reads the environment name from the repository variable `COLORS_PROFILE` and is skipped while that variable is empty. After `create` has run once:
+Continuous deployment: `colors.yml` names `github: pocketcontext/dealcontext`, so `create` publishes `SSH_PRIVATE_KEY`, `SERVER_IP`, `SERVER_USER`, and `SSH_KNOWN_HOSTS` to the GitHub environment named after the profile. The `deploy` job reads the environment name from the repository variable `COLORS_PROFILE` and is skipped while that variable is empty. After `create` has run once, install the CRM-specific hook on the ONCE server before enabling deployment:
 
 ```sh
-gh variable set COLORS_PROFILE --repo pocketcontext/dealcontext --body production
+# From a trusted checkout copied to the ONCE server:
+sudo python3 deploy/install.py
+# Perform one controlled update, persisting auto-update=false:
+sudo /usr/local/sbin/deploy-dealcontext
+# Then enable the GitHub deploy job:
+gh variable set COLORS_PROFILE --repo pocketcontext/dealcontext --body once-pocketcontext
 ```
 
-The job opens an SSH connection and sends no command. The deploy key's forced command on the server pulls `:latest` and updates the application.
+The production environment is `once-pocketcontext`. The job opens an SSH connection and sends no command. The deploy key's forced command runs the root-owned `/usr/local/sbin/deploy-dealcontext` wrapper. It locks deployments, pre-pulls the fixed CRM image, gracefully stops the exact CRM container with a 60-second timeout, and runs `once update crm.pocketcontext.com --auto-update=false`. A failed update restarts the captured old container only when it is still the sole CRM container; ambiguous recovery fails for operator inspection. Pull failures leave the running service untouched, and a forced stop prevents an update. Deployments briefly interrupt CRM availability.
+
+The installer preserves other applications' keys and restrictions and grants sudo only for the fixed wrapper without arguments. Re-run it after Colors provisioning rewrites deployment keys.
+
+After SSH succeeds, the workflow retries `https://crm.pocketcontext.com/up` for up to three minutes and fails if the public database-backed health endpoint remains unavailable. Main-branch runs and deployment jobs are serialized without cancelling an active deployment. The health check verifies availability; it does not attest which image revision is serving.
 
 ### Restore drill
 
 Replication is checked, not assumed. The `check` job of `image.yml` runs `docker/smoke.py restore`: it starts MinIO as the S3 service, starts the image with the `LITESTREAM_*` variables, creates an agent and records, kills the container, removes the container and its volume, and starts a new container on an empty volume. The agent must log in, SQL reads must return the records, and Litestream's integrity check of the restored database must pass. A second round writes a record immediately before `docker stop` with a one hour sync interval, so only the final sync at shutdown can save it, and restores again. The same happens on a real server: a new server with an empty volume and the same `LITESTREAM_*` values restores the database on its first start. Stop the old server first. A restore that fails, for example because of rejected credentials or a missing bucket, stops the container; it never starts on an empty database next to an existing replica. While the bucket cannot be reached, Litestream keeps retrying and the server does not start.
 
-Open risk, not verified: `once update` may run the new container while the old one is still stopping. For a few seconds two servers would then use one SQLite file and two Litestream processes would write one replica. Until this is checked on a real ONCE server, make a backup before an update that matters, and run the drill above against the production replica from time to time.
+ONCE v0.3.3 starts the replacement container on the existing storage volume before force-removing the old container. Its default update therefore overlaps two servers on one SQLite database and two Litestream processes on one replica, and does not allow the old process to complete its final sync. A safe DealContext deployment must stop the old container gracefully before starting the replacement. Do not enable the default update hook without that sequencing; continue running the restore drill against the production replica periodically.
 
 With Docker installed, the same checks run locally:
 
