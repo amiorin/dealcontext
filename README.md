@@ -2,7 +2,7 @@
 
 A sales CRM operated through a coding agent. Contacts, pipelines, deals, activities, and notes live in PocketBase. Agents read context with SQL and write records through the normal PocketBase REST API. There is no CRM frontend.
 
-[PocketContext](https://github.com/amiorin/pocketcontext) supplies the server and restricted SQL endpoints. This repository supplies the CRM schema, configuration, workflow tests, and an installable agent skill in [skills/dealcontext](skills/dealcontext/SKILL.md) that holds the agent instructions and a small command-line client.
+[PocketContext](https://github.com/pocketcontext/pocketcontext) supplies the server and restricted SQL endpoints. This repository supplies the CRM schema, configuration, workflow tests, and an installable agent skill in [skills/dealcontext](skills/dealcontext/SKILL.md) that holds the agent instructions and a small command-line client.
 
 ## Run locally
 
@@ -50,8 +50,8 @@ Give the coding agent the skill described in the next section, the server URL, a
 The computer that operates the CRM needs Python 3, the skill, and three environment variables. It does not need a clone of this repository. Install the skill with the [`skills` CLI](https://github.com/vercel-labs/skills), which needs Node.js:
 
 ```sh
-npx skills add amiorin/dealcontext --list                                        # shows the skill found in skills/dealcontext
-npx skills add amiorin/dealcontext --skill dealcontext --agent claude-code -g -y # user-level install for Claude Code
+npx skills add pocketcontext/dealcontext --list                                        # shows the skill found in skills/dealcontext
+npx skills add pocketcontext/dealcontext --skill dealcontext --agent claude-code -g -y # user-level install for Claude Code
 ```
 
 `-g` installs for the user (for Claude Code: `~/.claude/skills/dealcontext`); without it the skill is installed into the current project. `--agent` takes one or more agent names; without `--agent` and `-y` the CLI asks. `npx skills update dealcontext -g` fetches a newer version. A local checkout works as a source too: `npx skills add /path/to/dealcontext --skill dealcontext`. Without Node.js, copy the `skills/dealcontext` directory into the agent's skills directory.
@@ -108,7 +108,7 @@ See [schema](skills/dealcontext/references/schema.md), [workflows](skills/dealco
 
 The `Dockerfile` builds an image for [Basecamp ONCE](https://github.com/basecamp/once): HTTP on port 80, `GET /up` for the health check, and all state in the `/storage` volume (`/storage/pb_data`). The build stage compiles PocketContext at the commit in `POCKETCONTEXT_VERSION`. The runtime stage adds `pb_migrations/`, `pb_hooks/`, `pocketcontext.json`, and Litestream 0.5.17. `tini` is PID 1 and runs `docker/entrypoint.sh`, which restores the database when the volume is empty, upserts the superuser, and starts Litestream; Litestream starts the server, forwards the stop signal to it, and makes a final sync after the server has exited. The container runs as root, because ONCE creates and mounts `/storage` and offers no option to set its owner or the container's user.
 
-The workflow `.github/workflows/image.yml` builds and checks the image on every push and pull request. On `main` it also publishes `ghcr.io/amiorin/dealcontext:latest` and `:sha-<short commit>` for `linux/amd64` and `linux/arm64`, then pings the server. ONCE has no registry login, so the package must be public. The first publication from this public repository created it as public: `ghcr.io/amiorin/dealcontext:latest` can be pulled without credentials. The image holds the server binary, migrations, hooks, and configuration, and no credentials. Check the package settings on GitHub if a pull on the server is refused.
+The workflow `.github/workflows/image.yml` builds and checks the image on every push and pull request. On `main` it also publishes `ghcr.io/pocketcontext/dealcontext:latest` and `:sha-<short commit>` for `linux/amd64` and `linux/arm64`, then pings the server. ONCE has no registry login, so the package must be public. The first publication from this public repository created it as public: `ghcr.io/pocketcontext/dealcontext:latest` can be pulled without credentials. The image holds the server binary, migrations, hooks, and configuration, and no credentials. Check the package settings on GitHub if a pull on the server is refused.
 
 ### Variables
 
@@ -135,8 +135,8 @@ profile: production
 once:
   applications:
     - host: crm.example.com
-      image: ghcr.io/amiorin/dealcontext:latest
-      github: amiorin/dealcontext
+      image: ghcr.io/pocketcontext/dealcontext:latest
+      github: pocketcontext/dealcontext
       env:
         DEALCONTEXT_SUPERUSER_EMAIL: app-dealcontext-superuser-email
         DEALCONTEXT_SUPERUSER_PASSWORD: app-dealcontext-superuser-password
@@ -173,10 +173,10 @@ Trusted proxy header: PocketBase uses it for the client address in the rate limi
 
 Superuser and dashboard: the PocketBase dashboard at `/_/` is reachable on the public host. It is protected by the superuser login and by the `*:auth` rate limit; no second factor is configured. Use a long random password. Because the entrypoint upserts the superuser on every start, a password changed in the dashboard lasts until the next start: change the Colors parameter instead. When the two variables are not set and the database has no superuser, PocketBase prints a one-time installation link with a token to the container log.
 
-Continuous deployment: `colors.yml` names `github: amiorin/dealcontext`, so `create` publishes `SSH_PRIVATE_KEY`, `SERVER_IP`, `SERVER_USER`, and `SSH_KNOWN_HOSTS` to the GitHub environment named after the profile. The `deploy` job reads the environment name from the repository variable `COLORS_PROFILE` and is skipped while that variable is empty. After `create` has run once:
+Continuous deployment: `colors.yml` names `github: pocketcontext/dealcontext`, so `create` publishes `SSH_PRIVATE_KEY`, `SERVER_IP`, `SERVER_USER`, and `SSH_KNOWN_HOSTS` to the GitHub environment named after the profile. The `deploy` job reads the environment name from the repository variable `COLORS_PROFILE` and is skipped while that variable is empty. After `create` has run once:
 
 ```sh
-gh variable set COLORS_PROFILE --repo amiorin/dealcontext --body production
+gh variable set COLORS_PROFILE --repo pocketcontext/dealcontext --body production
 ```
 
 The job opens an SSH connection and sends no command. The deploy key's forced command on the server pulls `:latest` and updates the application.

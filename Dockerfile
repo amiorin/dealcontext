@@ -42,9 +42,9 @@ RUN set -eu; \
     if ! grep -Eqx '[0-9a-f]{40}' /tmp/POCKETCONTEXT_VERSION; then \
       echo "POCKETCONTEXT_VERSION must hold a 40-character commit SHA" >&2; exit 1; \
     fi; \
-    echo "fetching github.com/amiorin/pocketcontext at ${revision}"; \
+    echo "fetching github.com/pocketcontext/pocketcontext at ${revision}"; \
     git init -q .; \
-    git remote add origin https://github.com/amiorin/pocketcontext.git; \
+    git remote add origin https://github.com/pocketcontext/pocketcontext.git; \
     git fetch -q --depth 1 origin "${revision}"; \
     git checkout -q --detach FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "${revision}"
@@ -78,5 +78,5 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="DealContext" \
       org.opencontainers.image.description="Sales CRM operated through a coding agent: PocketContext server, CRM migrations and hooks, Litestream replication" \
-      org.opencontainers.image.source="https://github.com/amiorin/dealcontext" \
+      org.opencontainers.image.source="https://github.com/pocketcontext/dealcontext" \
       org.opencontainers.image.revision="${REVISION}"
