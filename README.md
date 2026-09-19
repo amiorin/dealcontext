@@ -47,9 +47,26 @@ Point your coding agent at this repository's [AGENTS.md](AGENTS.md), the server 
 
 ## Data and permissions
 
-The seven CRM collections are SQL-readable. Auth and internal tables are excluded. Every authenticated `agents` account can read and write all CRM records. The `owner` relation assigns work; it does not restrict visibility.
+The seven CRM collections and `audit_log` are SQL-readable. Auth and internal tables are excluded. Every authenticated `agents` account can read, create, and update all CRM records. The `owner` relation assigns work; it does not restrict visibility.
 
-PocketBase validates fields and relations on writes. Lifecycle conventions such as setting `closed_at` on a won deal are documented agent responsibilities. The first version does not include email sync, external message delivery, automated stage history, tenant isolation, or currency conversion.
+PocketBase validates fields and relations on writes. Server hooks in `pb_hooks/` add these rules to every validated save, from the records API and from the dashboard. A violation returns HTTP 400 with a message naming the field and the rule:
+
+- An open deal has empty `closed_at` and `lost_reason`. A won deal has `closed_at` set and an empty `lost_reason`. A lost deal has `closed_at` set; `lost_reason` is optional.
+- When a request sets a deal's status to `won` or `lost` without a `closed_at`, the server fills it with the current UTC time. Nothing is cleared automatically: reopening a deal must clear `closed_at` and `lost_reason` in the same request.
+- `currency` must be an active ISO 4217 alphabetic code. `ZZZ`, `XXX`, and `XTS` are rejected.
+- A done activity has `completed_at` set; the server fills it when empty. An activity that is not done has an empty `completed_at`.
+- A note links to at least one deal, person, or organization.
+- A date value the server cannot parse is rejected. It is not stored as empty or replaced by the current time.
+- A write to a record that another request changed after the server loaded it returns HTTP 409 instead of overwriting that change. The client reads the record again and retries.
+- On deals, activities, and notes, when both `person` and `organization` are set and the person has an organization, the two must match.
+
+Deletes are superuser-only on all seven CRM collections. An agent DELETE returns 403. The operator deletes records through the dashboard or with a superuser token. Agents correct mistakes by updating records, for example closing a deal as lost or completing an activity.
+
+Every CRM record has `created_by` and `updated_by`. The server sets them from the authenticated agent and ignores values an agent sends. Superuser requests leave them unchanged. `audit_log` receives one row for each create, update, and delete made through the records API on the seven CRM collections, by agents and superusers, with the actor and the changed values. A no-op update and a rejected write add no row. The log is append-only for agents: they can read it through SQL and the records API, and its create, update, and delete rules are superuser-only. Internal relation clears that follow an operator delete are not logged. Stage history is read from `audit_log`; see [examples](agent/examples.md).
+
+`created_by` and `updated_by` are optional relations, so deleting an agent account clears those stamps on its records. `audit_log.actor` is plain text and keeps the ID. PocketBase also refuses to delete an agent while records name it as `owner`. To retire an agent and keep its stamps, change its password instead of deleting the account.
+
+Rules outside this list remain agent conventions documented in [workflows](agent/workflows.md). This version does not include tenant isolation, email sync, external message delivery, or currency conversion.
 
 `pocketcontext.json` sets SQL tables, query timeout, and result limits. Empty column arrays expose all columns of those configured tables. Review newly added fields before deploying migrations that could expose sensitive data.
 
@@ -61,6 +78,6 @@ See [schema](agent/schema.md), [workflows](agent/workflows.md), and [examples](a
 python3 tests/integration.py --binary ../pocketcontext/bin/pocketcontext
 ```
 
-The test creates a temporary database, provisions an agent, and exercises contact creation, stage changes, follow-ups, notes, deal closure, SQL joins, permissions, and field validation. It deletes its temporary state when finished.
+The test creates a temporary database, provisions two agents, and exercises contact creation, stage changes, follow-ups, notes, deal closure, SQL joins, permissions, and field validation. It also checks each server rule above with a rejected and an accepted write, superuser-only deletes, `created_by` and `updated_by` stamping, and the `audit_log` rows for creates, updates, and deletes. It deletes its temporary state when finished.
 
 Schema migrations use [PocketBase JavaScript migrations](https://pocketbase.io/docs/js-migrations/). Authentication and writes use the [PocketBase Web APIs](https://pocketbase.io/docs/api-records/).

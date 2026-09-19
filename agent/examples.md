@@ -27,6 +27,29 @@ ORDER BY d.updated DESC
 LIMIT 50
 ```
 
+Stage history of one deal from `audit_log`. A `create` row has a NULL `from_stage`. A deal that existed before the log was added starts with an `update` row. A stage name is NULL if the operator deleted that stage:
+
+```sql
+SELECT a.created, a.action, a.actor, a.actor_type,
+       f.name AS from_stage, t.name AS to_stage
+FROM audit_log a
+LEFT JOIN stages f ON f.id = json_extract(a.changes, '$.before.stage')
+LEFT JOIN stages t ON t.id = json_extract(a.changes, '$.after.stage')
+WHERE a.collection = 'deals' AND a.record = '<deal-id>'
+  AND json_extract(a.changes, '$.after.stage') IS NOT NULL
+ORDER BY a.created
+```
+
+All recorded changes to one record, newest first:
+
+```sql
+SELECT created, action, actor, actor_type, changes
+FROM audit_log
+WHERE collection = 'deals' AND record = '<deal-id>'
+ORDER BY created DESC
+LIMIT 50
+```
+
 Submit plain SQL in JSON:
 
 ```sh
@@ -60,5 +83,27 @@ Content-Type: application/json
 
 {"subject":"Follow up with Acme","kind":"call","deal":"<deal-id>","owner":"<agent-id>","due_at":"2026-09-25 09:00:00.000Z","done":false}
 ```
+
+Close a deal as lost. The server fills `closed_at`:
+
+```http
+PATCH /api/collections/deals/records/<deal-id>
+Authorization: <agent-token>
+Content-Type: application/json
+
+{"status":"lost","lost_reason":"Chose a competitor"}
+```
+
+Reopen it. Both fields must be cleared in the same request:
+
+```http
+PATCH /api/collections/deals/records/<deal-id>
+Authorization: <agent-token>
+Content-Type: application/json
+
+{"status":"open","closed_at":"","lost_reason":""}
+```
+
+Do not send `created_by` or `updated_by`, and do not send DELETE requests; agents cannot delete records.
 
 Use HTTP clients that encode JSON correctly. For SQL literals, use a trusted SQL literal encoder rather than interpolating raw user text. Check the response's truncation indicator and use ordered pagination when needed.

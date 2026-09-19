@@ -7,7 +7,8 @@
     "stages": [],
     "deals": [],
     "activities": [],
-    "notes": []
+    "notes": [],
+    "audit_log": []
   },
   "timeoutMs": 2000,
   "maxRows": 500,

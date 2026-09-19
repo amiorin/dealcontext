@@ -10,6 +10,10 @@ All agents share the same workspace and can read and change all CRM records. Own
 
 Resolve record IDs before a write. Ask for clarification when names match multiple records. Set explicit status, currency, and owner on deals. Report the result and record IDs after writes. A multi-request workflow can partially succeed: inspect the state before retrying to avoid duplicate activities or notes.
 
+The server rejects writes that break the record rules in `agent/schema.md` with HTTP 400 and a message naming the field and the rule. Read the message, fix the request, and do not retry it unchanged. HTTP 409 means another request changed the record after the server loaded it: read the record again, check that your change still applies, and retry. Do not send `created_by` or `updated_by`; the server sets them from your token and ignores your values. Every create and update you make is recorded in `audit_log` with your agent ID.
+
+Agents cannot delete CRM records; a DELETE returns 403. Mark a mistake instead: close a deal as `lost` with a `lost_reason`, complete an activity and explain in its description, or correct a note. If a record must be removed, such as a duplicate, give the operator the collection and record ID and ask them to delete it with superuser access.
+
 Do not send email, invitations, or other external messages unless the user explicitly requests it. An email activity records CRM work; it does not send an email.
 
 Implementation changes: run `python3 tests/integration.py --binary /absolute/path/to/pocketcontext` against a locally built PocketContext binary. The test uses an isolated temporary database.
