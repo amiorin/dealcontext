@@ -80,7 +80,7 @@ This identifies agent traffic to proxies that reject Python's generic user-agent
 
 ## Data and permissions
 
-The eight CRM collections, `enquiries`, and `audit_log` are SQL-readable. Auth and internal tables are excluded. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
+The eight CRM collections, `enquiries`, and `audit_log` are SQL-readable. Auth and internal tables are excluded. The operator-managed `enquiry_notification_recipients` collection is superuser-only through the records API and excluded from agent SQL. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
 
 PocketBase validates fields and relations on writes. Server hooks in `pb_hooks/` add these rules to every validated save, from the records API and from the dashboard. A violation returns HTTP 400 with a message naming the field and the rule:
 
@@ -158,7 +158,21 @@ Anyone can submit any text, and a coding agent with shell access and write acces
 
 A browser sends a CORS preflight before a cross-origin JSON `POST`, so the website's origin must be allowed. In the image, the allowed origins are `BASE_URL` plus the comma-separated list in `DEALCONTEXT_INTAKE_ORIGINS`, for example `https://pocketcontext.com,https://www.pocketcontext.com`. Entries are trimmed and a trailing slash is removed. An origin is scheme, host, and port, without a path. A local server takes the same list through `serve --origins=...`. CORS restricts browsers only; it does not stop other clients from posting, which is what the rate limit, the size limit, and the honeypot are for.
 
-When `DEALCONTEXT_INTAKE_NOTIFY` holds an email address and SMTP is enabled in the settings, each stored enquiry sends one plain-text email to that address with the name, the email address, and the record id. It does not contain the free text. A mail failure is logged and does not fail the submission. Unset: no email.
+With SMTP enabled in PocketBase settings, each enquiry stored by the intake endpoint sends a separate plain-text email to every enabled record in `enquiry_notification_recipients`. Each message contains only the submitter's name, email address, and enquiry ID; it excludes submitted free text and other recipients' addresses. Enquiries created through the dashboard or records API do not send notifications.
+
+Manage the list in the PocketBase dashboard at `/_/` or through `/api/collections/enquiry_notification_recipients/records` with a superuser token. Agents cannot read or change this collection through REST or SQL.
+
+| Field | Meaning |
+| --- | --- |
+| `email` | Required valid address, trimmed and lowercased before validation; unique across the list. |
+| `name` | Optional display name. |
+| `enabled` | Whether this recipient receives notifications. Defaults to `false`; set it to `true` to subscribe. |
+
+The server reads enabled recipients for each notification. Adding, editing, disabling, or deleting a recipient takes effect for subsequent notifications without restarting or replacing the container. An empty list, no enabled recipients, or disabled SMTP sends nothing.
+
+Delivery is best-effort after the response is flushed: a failed send is logged, other recipients are still attempted, and the submission remains successful. There are no retries or delivery records. Duplicates, honeypot submissions, and rejected requests send nothing.
+
+Deploy the updated image once to install the collection and hooks. The collection starts empty; no recipient is imported from the former environment setting. Add and enable recipients after deployment, and remove any obsolete notification-recipient variable from the deployment configuration.
 
 ### Point the website at it
 
@@ -186,7 +200,6 @@ ONCE injects `BASE_URL`, `SMTP_ADDRESS`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PAS
 | `DEALCONTEXT_TRUSTED_PROXY_HEADER` | Header that holds the client address, see below. Unset: the stored setting is left alone. |
 | `DEALCONTEXT_RATE_LIMITS` | `true` enables the rate limits, `false` disables them. The image sets `true`. |
 | `DEALCONTEXT_INTAKE_ORIGINS` | Comma-separated browser origins that may post the [public enquiry form](#public-enquiry-form), for example `https://pocketcontext.com`. Added to `BASE_URL` in the CORS origins. Unset: only `BASE_URL`. |
-| `DEALCONTEXT_INTAKE_NOTIFY` | Email address that receives one message per stored enquiry, without the free text. Needs SMTP. Unset: no email. |
 | `LITESTREAM_BUCKET`, `LITESTREAM_PATH`, `LITESTREAM_ACCESS_KEY_ID`, `LITESTREAM_SECRET_ACCESS_KEY` | Required. The S3 replica of `/storage/pb_data/data.db`. A missing one is a startup error that names it. |
 | `LITESTREAM_REGION`, `LITESTREAM_ENDPOINT` | Region and, for a service other than AWS S3, the endpoint URL. |
 | `LITESTREAM_SYNC_INTERVAL` | Default `10s`. |
@@ -219,7 +232,6 @@ once:
         LITESTREAM_SYNC_INTERVAL: app-dealcontext-litestream-sync-interval
         DEALCONTEXT_RATE_LIMITS: app-dealcontext-rate-limits
         DEALCONTEXT_INTAKE_ORIGINS: app-dealcontext-intake-origins
-        DEALCONTEXT_INTAKE_NOTIFY: app-dealcontext-intake-notify
         LITESTREAM_DISABLED: app-dealcontext-litestream-disabled
 ```
 
@@ -234,7 +246,6 @@ export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_ENDPOINT=https://ACCOUNT_ID.r2.clou
 export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_ACCESS_KEY_ID=...
 export COLORS_PAR_APP_DEALCONTEXT_LITESTREAM_SECRET_ACCESS_KEY=...
 export COLORS_PAR_APP_DEALCONTEXT_INTAKE_ORIGINS=https://pocketcontext.com,https://www.pocketcontext.com   # only with the public enquiry form
-export COLORS_PAR_APP_DEALCONTEXT_INTAKE_NOTIFY=sales@example.com                                         # optional
 ```
 
 How Colors treats a mapped key that has no value was not checked here, so list only the keys you set.
@@ -290,7 +301,7 @@ The integration test creates a temporary database, provisions two agents, and ex
 
 The deployment test starts a server with the variables of the deployment contract and checks `/up`, the settings taken from the environment, the trusted proxy header, the rate limits per forwarded client address, a later start without the variables, and the agent password rules of the security migration. The container image has its own checks, see [Deploy with ONCE](#deploy-with-once).
 
-The intake test posts to `/api/intake/enquiry` on a temporary server: the payload the PocketContext website sends, validation errors, the body limit, the honeypot, duplicates, parallel submissions, the rate limit per forwarded client address, the CORS preflight for an allowed and a disallowed origin, the notification email with a local SMTP sink, SQL reads of `details`, what agents may change, the `audit_log` rows, and that accepted submissions leave no request log entry.
+The intake test posts to `/api/intake/enquiry` on a temporary server: the payload the PocketContext website sends, validation errors, the body limit, the honeypot, duplicates, parallel submissions, the rate limit per forwarded client address, the CORS preflight for an allowed and a disallowed origin, notifications to multiple enabled recipients with a local SMTP sink, recipient permissions and uniqueness, independent delivery failures, SQL reads of `details`, what agents may change, the `audit_log` rows, and that accepted submissions leave no request log entry.
 
 The skill test checks the skill's frontmatter and links, copies `skills/dealcontext` to a temporary directory outside the repository, and runs `dc.py` there against a temporary server with a temporary `HOME`: configuration errors, the token cache, every command, batch success and failure, recovery from a rejected token, exit codes, and that the password and token never reach the output. Its `check` step fails when a migration changes the SQL-readable tables or columns. Regenerate the snapshot and review the reference files:
 

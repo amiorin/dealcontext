@@ -139,20 +139,27 @@ function enquiry(e) {
   if (id) notify(e.app, id, columns);
 }
 
-// Optional operator email: name, email, and record id, never the free text.
+// Operator mailing list: name, email, and record id, never the free text.
 function notify(app, id, columns) {
   try {
-    const to = String($os.getenv("DEALCONTEXT_INTAKE_NOTIFY") || "").trim();
-    if (!to || !app.settings().smtp.enabled) return;
+    if (!app.settings().smtp.enabled) return;
     const plain = (value) => value.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, " ");
-    app.newMailClient().send(new MailerMessage({
-      from: {address: app.settings().meta.senderAddress, name: app.settings().meta.senderName},
-      to: [{address: to}],
-      subject: "New enquiry",
-      text: "A new enquiry was stored.\n\nName: " + plain(columns.name) + "\nEmail: " + plain(columns.email) + "\nRecord: enquiries/" + id + "\n",
-    }));
+    const recipients = app.findRecordsByFilter("enquiry_notification_recipients", "enabled = true", "id", 0, 0);
+    for (const recipient of recipients) {
+      try {
+        app.newMailClient().send(new MailerMessage({
+          from: {address: app.settings().meta.senderAddress, name: app.settings().meta.senderName},
+          to: [{address: recipient.getString("email")}],
+          subject: "New enquiry",
+          text: "A new enquiry was stored.\n\nName: " + plain(columns.name) + "\nEmail: " + plain(columns.email) + "\nRecord: enquiries/" + id + "\n",
+        }));
+      } catch (_) {
+        // SMTP errors may repeat addresses or submitted values. Log only record identifiers.
+        app.logger().error("intake: the notification email was not sent", "record", id, "recipient", recipient.id);
+      }
+    }
   } catch (error) {
-    app.logger().error("intake: the notification email was not sent", "record", id, "error", String(error));
+    app.logger().error("intake: the notification email was not sent", "record", id);
   }
 }
 

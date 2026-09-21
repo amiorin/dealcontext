@@ -21,10 +21,11 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ['BASE_URL', 'SMTP_ADDRESS', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD', 'MAILER_FROM_ADDRESS',
-            'DEALCONTEXT_TRUSTED_PROXY_HEADER', 'DEALCONTEXT_RATE_LIMITS', 'DEALCONTEXT_INTAKE_ORIGINS', 'DEALCONTEXT_INTAKE_NOTIFY']
+            'DEALCONTEXT_TRUSTED_PROXY_HEADER', 'DEALCONTEXT_RATE_LIMITS', 'DEALCONTEXT_INTAKE_ORIGINS']
 ADMIN, ADMIN_PASSWORD = 'test-admin@example.com', 'TestAdminPassword123!'
 INTAKE = '/api/intake/enquiry'
 ENQUIRIES = '/api/collections/enquiries/records'
+RECIPIENTS = '/api/collections/enquiry_notification_recipients/records'
 SITE, OTHER_SITE, APP = 'https://pocketcontext.example', 'https://www.pocketcontext.example', 'https://crm.example.test'
 USER_AGENT = 'IntakeTestBrowser/1.0'
 NOTIFY = 'operator@example.test'
@@ -61,7 +62,7 @@ class Mailbox(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
     def __init__(self):
-        self.messages, self.delay = [], 0
+        self.messages, self.delay, self.reject = [], 0, set()
         super().__init__(('127.0.0.1', 0), MailboxHandler)
         threading.Thread(target=self.serve_forever, daemon=True).start()
 
@@ -88,8 +89,12 @@ class MailboxHandler(socketserver.StreamRequestHandler):
                 message['from'] = line[10:].split()[0].strip('<>')
                 reply('250 ok')
             elif verb.startswith('RCPT TO:'):
-                message['to'].append(line[8:].split()[0].strip('<>'))
-                reply('250 ok')
+                recipient = line[8:].split()[0].strip('<>')
+                if recipient in self.server.reject:
+                    reply('550 recipient rejected: ' + recipient)
+                else:
+                    message['to'].append(recipient)
+                    reply('250 ok')
             elif verb.startswith('DATA'):
                 reply('354 go on')
                 content = b''
@@ -101,7 +106,8 @@ class MailboxHandler(socketserver.StreamRequestHandler):
                 parsed = email.message_from_bytes(content)
                 texts = [part.get_payload(decode=True).decode() for part in parsed.walk() if part.get_content_maintype() == 'text']
                 self.server.messages.append({**message, 'subject': str(parsed['Subject']), 'text': '\n'.join(texts),
-                                             'types': [part.get_content_type() for part in parsed.walk()]})
+                                             'types': [part.get_content_type() for part in parsed.walk()],
+                                             'headers': '\n'.join(f'{key}: {value}' for key, value in parsed.items())})
                 reply('250 ok')
             else:
                 reply('250 ok')
@@ -225,6 +231,29 @@ def main():
                 return record, login('agents', mail, password)
             agent1, token = agent(1)
             agent2, _ = agent(2)
+            with item('notification recipients are normalized, unique, and managed only by superusers'):
+                recipient = request('POST', RECIPIENTS, {'email': '  OPERATOR@example.test  ', 'name': 'Operator'}, admin)
+                assert recipient['email'] == NOTIFY and recipient['enabled'] is False, recipient
+                recipient_path = RECIPIENTS + '/' + recipient['id']
+                for invalid in ('', 'not-an-address', 'name\r\n@example.test'):
+                    request('POST', RECIPIENTS, {'email': invalid}, admin, expected=400)
+                request('POST', RECIPIENTS, {'email': 'Operator@EXAMPLE.test'}, admin, expected=400)
+                second_recipient = request('POST', RECIPIENTS, {'email': 'second@example.test'}, admin)
+                second_path = RECIPIENTS + '/' + second_recipient['id']
+                request('PATCH', second_path, {'email': ' OPERATOR@EXAMPLE.test '}, admin, expected=400)
+                updated = request('PATCH', second_path, {'email': ' Renamed@EXAMPLE.test ', 'name': 'Renamed'}, admin)
+                assert updated['email'] == 'renamed@example.test' and updated['name'] == 'Renamed', updated
+                for credentials in (None, token):
+                    request('GET', RECIPIENTS, token=credentials, expected=403)
+                    request('GET', recipient_path, token=credentials, expected=403)
+                    request('POST', RECIPIENTS, {'email': 'forbidden@example.test'}, credentials, expected=403)
+                    request('PATCH', recipient_path, {'enabled': True}, credentials, expected=403)
+                    request('DELETE', recipient_path, token=credentials, expected=403)
+                schema = request('GET', '/api/context/schema', token=token)
+                assert 'enquiry_notification_recipients' not in json.dumps(schema), schema
+                request('POST', '/api/context/query', {'sql': 'SELECT * FROM enquiry_notification_recipients'}, token, expected=400)
+                request('DELETE', second_path, token=admin, expected=204)
+                request('GET', second_path, token=admin, expected=404)
             def sql(query):
                 result = request('POST', '/api/context/query', {'sql': query}, token)
                 return [dict(zip(result['columns'], row)) for row in result['rows']]
@@ -486,20 +515,21 @@ def main():
 
             closed = free_port()
             limits = {'MAILER_FROM_ADDRESS': 'Info <info@notifications.example.test>', 'SMTP_ADDRESS': '127.0.0.1', 'SMTP_PORT': str(mailbox.server_address[1]),
-                      'DEALCONTEXT_TRUSTED_PROXY_HEADER': 'X-Forwarded-For', 'DEALCONTEXT_RATE_LIMITS': 'true', 'DEALCONTEXT_INTAKE_NOTIFY': NOTIFY}
+                      'DEALCONTEXT_TRUSTED_PROXY_HEADER': 'X-Forwarded-For', 'DEALCONTEXT_RATE_LIMITS': 'true'}
             start('second', limits)
             admin = login('_superusers', ADMIN, ADMIN_PASSWORD, '198.51.100.1')
             def total():
                 return request('GET', ENQUIRIES + '?perPage=1', token=admin)['totalItems']
-            def delivered(number):
-                """The messages to the operator address, which must be exactly this many. Superuser login alerts go elsewhere."""
+            request('PATCH', recipient_path, {'enabled': True}, admin)
+            def delivered(number, address=NOTIFY):
+                """Messages to one recipient, exactly this many. Superuser login alerts go elsewhere."""
                 for _ in range(100):
-                    found = [message for message in mailbox.messages if message['to'] == [NOTIFY]]
+                    found = [message for message in mailbox.messages if message['to'] == [address]]
                     if len(found) >= number:
                         break
                     time.sleep(.1)
                 time.sleep(.3)
-                found = [message for message in mailbox.messages if message['to'] == [NOTIFY]]
+                found = [message for message in mailbox.messages if message['to'] == [address]]
                 assert len(found) == number, found
                 return found
             with item('S6 a stored enquiry sends one plain-text email with the name, the email, and the record id, not the free text'):
@@ -552,13 +582,58 @@ def main():
             stop()
 
             start('third', {})
-            with item('S6 without DEALCONTEXT_INTAKE_NOTIFY no email is sent, even with SMTP enabled in the stored settings'):
+            with item('S6 disabling recipients takes effect without a restart, even with SMTP enabled'):
                 admin = login('_superusers', ADMIN, ADMIN_PASSWORD, '198.51.100.1')
                 assert request('GET', '/api/settings', token=admin)['smtp']['enabled'] is True
+                request('PATCH', recipient_path, {'enabled': False}, admin)
                 submit({**FORM, 'email': 'silent@example.org'}, ip='198.51.100.12')
                 assert stored('silent@example.org')['status'] == 'new'
                 delivered(mails)
-            stop()
+            with item('S6 live recipient creation and editing send separate private messages to enabled addresses'):
+                extra = request('POST', RECIPIENTS, {'email': 'extra@example.test', 'enabled': True}, admin)
+                disabled = request('POST', RECIPIENTS, {'email': 'disabled@example.test'}, admin)
+                request('PATCH', recipient_path, {'enabled': True}, admin)
+                submit({**FORM, 'email': 'multiple@example.org'}, ip='198.51.100.14')
+                mails += 1
+                first_message = delivered(mails)[-1]
+                extra_message = delivered(1, extra['email'])[0]
+                assert extra['email'] not in first_message['headers'], first_message
+                assert NOTIFY not in extra_message['headers'], extra_message
+                delivered(0, disabled['email'])
+                extra_path = RECIPIENTS + '/' + extra['id']
+                request('PATCH', extra_path, {'email': 'replacement@example.test'}, admin)
+                submit({**FORM, 'email': 'edited@example.org'}, ip='198.51.100.15')
+                mails += 1
+                delivered(mails)
+                delivered(1, 'replacement@example.test')
+                delivered(1, extra['email'])
+                request('DELETE', extra_path, token=admin, expected=204)
+                submit({**FORM, 'email': 'deleted@example.org'}, ip='198.51.100.16')
+                mails += 1
+                delivered(mails)
+                delivered(1, 'replacement@example.test')
+            with item('S6 one rejected recipient does not prevent delivery to another or expose addresses in logs'):
+                failing = request('POST', RECIPIENTS, {'id': '000000000000001', 'email': 'reject@example.test', 'enabled': True}, admin)
+                mailbox.reject.add(failing['email'])
+                submit({**FORM, 'email': 'partial@example.org'}, ip='198.51.100.17')
+                row = stored('partial@example.org')
+                mails += 1
+                delivered(mails)
+                delivered(0, failing['email'])
+                for _ in range(100):
+                    found = request('GET', '/api/logs?filter=' + urllib.request.quote("message ~ 'notification email'"), token=admin)['items']
+                    if row['id'] in json.dumps(found):
+                        break
+                    time.sleep(.2)
+                else:
+                    raise AssertionError('the recipient rejection never reached the log')
+                text = json.dumps(found)
+                assert failing['id'] in text and failing['email'] not in text and NOTIFY not in text, text
+                assert 'partial@example.org' not in text and FORM['name'] not in text, text
+                request('DELETE', RECIPIENTS + '/' + failing['id'], token=admin, expected=204)
+                mailbox.reject.clear()
+            output = stop()
+            assert failing['email'] not in output, output
 
             start('fourth', {**limits, 'SMTP_PORT': str(closed)})
             with item('S6 a mail failure is logged and does not fail the request'):
@@ -567,13 +642,13 @@ def main():
                 row = stored('unreachable@example.org')
                 for _ in range(100):
                     found = request('GET', '/api/logs?filter=' + urllib.request.quote("message ~ 'notification email'"), token=admin)['items']
-                    if found:
+                    if row['id'] in json.dumps(found):
                         break
                     time.sleep(.2)
                 else:
                     raise AssertionError('the mail failure never reached the log')
                 text = json.dumps(found)
-                assert row['id'] in text and 'unreachable@example.org' not in text and FORM['name'] not in text, text
+                assert row['id'] in text and recipient['id'] in text and NOTIFY not in text and 'unreachable@example.org' not in text and FORM['name'] not in text, text
                 delivered(mails)
             start_output = stop()
             assert 'unreachable@example.org' not in start_output, start_output
@@ -614,7 +689,7 @@ def main():
     print('PASS: public enquiry endpoint (website payload, validation, details limits, honeypot, duplicates, JSON only, 16 KB body limit, '
           'no address or user agent stored, no audit row on create, parallel submissions), agent triage (status, person, deal, updated_by, '
           'qualified needs person, audited, submitted values locked, no create or delete), status-only delete audit, SQL access, '
-          'intake rate limit per client address, CORS origins from the entrypoint, operator notification email')
+          'intake rate limit per client address, CORS origins from the entrypoint, live notification mailing list, recipient permissions and failure isolation')
 
 
 if __name__ == '__main__':
