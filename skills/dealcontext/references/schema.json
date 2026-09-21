@@ -61,6 +61,20 @@
       {"name": "utm_medium", "type": "TEXT"},
       {"name": "utm_source", "type": "TEXT"}
     ]},
+    {"name": "messages", "columns": [
+      {"name": "body", "type": "TEXT"},
+      {"name": "channel", "type": "TEXT"},
+      {"name": "created", "type": "TEXT"},
+      {"name": "created_by", "type": "TEXT"},
+      {"name": "direction", "type": "TEXT"},
+      {"name": "id", "type": "TEXT"},
+      {"name": "owner", "type": "TEXT"},
+      {"name": "person", "type": "TEXT"},
+      {"name": "sent_at", "type": "TEXT"},
+      {"name": "source_url", "type": "TEXT"},
+      {"name": "updated", "type": "TEXT"},
+      {"name": "updated_by", "type": "TEXT"}
+    ]},
     {"name": "notes", "columns": [
       {"name": "body", "type": "TEXT"},
       {"name": "created", "type": "TEXT"},

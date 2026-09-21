@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-CRM = ['organizations', 'people', 'pipelines', 'stages', 'deals', 'activities', 'notes']
+CRM = ['organizations', 'people', 'pipelines', 'stages', 'deals', 'activities', 'notes', 'messages']
 
 
 @contextlib.contextmanager
@@ -222,6 +222,36 @@ def main():
                 create('notes', {'body': 'Unaffiliated', 'owner': agent['id'], **unaffiliated})
                 create('notes', {'body': 'Matched', 'owner': agent['id'], 'person': person['id'], 'organization': org['id']})
 
+            with item('messages: exact text, optional time, SQL access, validation and audit'):
+                payload = {'person': person['id'], 'owner': agent['id'], 'channel': 'linkedin',
+                           'direction': 'outgoing', 'body': 'Would you like a demo?'}
+                message = create('messages', payload)
+                assert message['sent_at'] == ''
+                assert sql(f"SELECT body, direction FROM messages WHERE id = '{message['id']}' LIMIT 1")['rows'] == [[payload['body'], 'outgoing']]
+                assert request('GET', one('messages', message), token=token2)['body'] == payload['body']
+                for field, value in [('person', ''), ('owner', ''), ('body', ''), ('channel', 'invalid'),
+                                     ('direction', 'invalid'), ('sent_at', 'not-a-date'), ('source_url', 'not-a-url')]:
+                    reject('POST', many('messages'), {**payload, field: value}, [field])
+                incoming = create('messages', {**payload, 'direction': 'incoming', 'body': 'Yes, please.',
+                                              'sent_at': '2030-01-01 09:00:00.000Z',
+                                              'source_url': 'https://example.com/thread/1'})
+                assert incoming['sent_at'].startswith('2030-01-01 09:00:00')
+                request('PATCH', one('messages', message), {'body': 'Corrected message',
+                        'created_by': agent2['id'], 'updated_by': agent['id']}, token2)
+                saved = request('GET', one('messages', message), token=token)
+                assert saved['created_by'] == agent['id'] and saved['updated_by'] == agent2['id']
+                assert audit('messages', message, 'update')[0]['changes']['after'] == {'body': 'Corrected message'}
+                before = audit_count()
+                request('POST', '/api/batch', {'requests': [
+                    {'method': 'POST', 'url': many('messages'), 'body': {**payload, 'id': 'batchmessage001'}},
+                    {'method': 'POST', 'url': many('messages'), 'body': {**payload, 'sent_at': 'not-a-date'}},
+                ]}, token, expected=400)
+                assert sql("SELECT id FROM messages WHERE id = 'batchmessage001' LIMIT 1")['rows'] == []
+                assert audit_count() == before
+                request('DELETE', one('messages', incoming), token=token, expected=403)
+                request('DELETE', one('messages', incoming), token=admin, expected=204)
+                assert audit('messages', incoming, 'delete')[0]['changes']['before']['body'] == 'Yes, please.'
+
             # B. Deletes, attribution, audit log.
             with item('B11 created_by and updated_by are stamped from the authenticated agent on create'):
                 assert {collection for collection, _ in made} == set(CRM), made
@@ -240,7 +270,7 @@ def main():
                 spoof3 = request('PATCH', one('organizations', spoof), {'name': 'Spoof 3'}, admin)
                 assert spoof3['created_by'] == agent['id'] and spoof3['updated_by'] == agent2['id'], spoof3
 
-            with item('B12 audit_log create rows: after values, actor, actor_type, all seven collections'):
+            with item('B12 audit_log create rows: after values, actor, actor_type, all eight collections'):
                 for collection in CRM:
                     record = next(record for name, record in made if name == collection)
                     rows = audit(collection, record, 'create')
@@ -284,11 +314,12 @@ def main():
                 assert audit_count() == count, 'rejected writes changed the audit_log row count'
 
             with item('B10 agent DELETE is rejected with 403 on every CRM collection'):
-                for collection, record in [('notes', note), ('activities', activity), ('deals', deal), ('stages', first), ('pipelines', pipeline), ('people', person), ('organizations', org)]:
+                deletes_before = sql("SELECT count(*) FROM audit_log WHERE action = 'delete'")['rows'][0][0]
+                for collection, record in [('messages', message), ('notes', note), ('activities', activity), ('deals', deal), ('stages', first), ('pipelines', pipeline), ('people', person), ('organizations', org)]:
                     request('DELETE', one(collection, record), token=token, expected=403)
                     request('GET', one(collection, record), token=token)
                 result = sql("SELECT count(*) FROM audit_log WHERE action = 'delete'")
-                assert result['rows'][0][0] == 0, result
+                assert result['rows'][0][0] == deletes_before, result
             with item('B10/A cascade: superuser can delete an organization referenced by a deal and by a note with no other link'):
                 doomed = create('organizations', {'name': 'Doomed', 'owner': agent['id']})
                 doomed_deal = create('deals', {**new_deal, 'title': 'Doomed deal', 'status': 'open', 'organization': doomed['id']})
@@ -445,13 +476,14 @@ def main():
                 assert request('GET', one('deals', bodies[0]), token=token)['title'] == 'Batch deal'
                 assert counts() == before, (before, counts())
             with item('C2 B10 an agent DELETE inside a batch fails the batch with 403 for that request'):
+                deletes_before = tally('audit_log', "action = 'delete'")
                 before = counts()
                 batch_fails([patch('deals', bodies[0], {'title': 'Rolled back title'}),
                              {'method': 'DELETE', 'url': one('notes', bodies[2])}], 1, 403)
                 batch_fails([{'method': 'DELETE', 'url': one('deals', bodies[0])}], 0, 403)
                 assert request('GET', one('deals', bodies[0]), token=token)['title'] == 'Batch deal'
                 request('GET', one('notes', bodies[2]), token=token)
-                assert counts() == before and tally('audit_log', "action = 'delete'") == 1, (before, counts())
+                assert counts() == before and tally('audit_log', "action = 'delete'") == deletes_before, (before, counts())
             with item('C4 two PATCHes of one record in one batch both apply, with one audit row each and no 409'):
                 patched = batch([patch('deals', bodies[0], {'status': 'won'}),
                                  patch('deals', bodies[0], {'title': 'Batch deal renamed'})])

@@ -1,6 +1,6 @@
 # DealContext
 
-A sales CRM operated through a coding agent. Contacts, pipelines, deals, activities, and notes live in PocketBase. Agents read context with SQL and write records through the normal PocketBase REST API. There is no CRM frontend. A website can post its contact form to a [public enquiry endpoint](#public-enquiry-form); agents triage what arrives.
+A sales CRM operated through a coding agent. Contacts, pipelines, deals, activities, messages, and notes live in PocketBase. Agents read context with SQL and write records through the normal PocketBase REST API. There is no CRM frontend. A website can post its contact form to a [public enquiry endpoint](#public-enquiry-form); agents triage what arrives.
 
 [PocketContext](https://github.com/pocketcontext/pocketcontext) supplies the server and restricted SQL endpoints. This repository supplies the CRM schema, configuration, workflow tests, and an installable agent skill in [skills/dealcontext](skills/dealcontext/SKILL.md) that holds the agent instructions and a small command-line client.
 
@@ -80,7 +80,7 @@ This identifies agent traffic to proxies that reject Python's generic user-agent
 
 ## Data and permissions
 
-The seven CRM collections, `enquiries`, and `audit_log` are SQL-readable. Auth and internal tables are excluded. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
+The eight CRM collections, `enquiries`, and `audit_log` are SQL-readable. Auth and internal tables are excluded. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
 
 PocketBase validates fields and relations on writes. Server hooks in `pb_hooks/` add these rules to every validated save, from the records API and from the dashboard. A violation returns HTTP 400 with a message naming the field and the rule:
 
@@ -95,9 +95,9 @@ PocketBase validates fields and relations on writes. Server hooks in `pb_hooks/`
 
 PocketBase's batch API is enabled: `POST /api/batch` runs up to 20 record writes as one transaction with a 5 second timeout. The rules above, the `created_by` and `updated_by` stamps, and `audit_log` apply to each request in a batch. If one request fails, the batch returns HTTP 400 with that request's error and nothing is saved. A create may send its own 15-character `id`, so a later request in the same batch can refer to the new record; this makes "create a deal with its first activity and a note" atomic. See [examples](skills/dealcontext/references/examples.md).
 
-Deletes are superuser-only on all seven CRM collections and on `enquiries`. An agent DELETE returns 403. The operator deletes records through the dashboard or with a superuser token. Agents correct mistakes by updating records, for example closing a deal as lost or completing an activity.
+Deletes are superuser-only on all eight CRM collections and on `enquiries`. An agent DELETE returns 403. The operator deletes records through the dashboard or with a superuser token. Agents correct mistakes by updating records, for example closing a deal as lost or completing an activity.
 
-Every CRM record has `created_by` and `updated_by`. The server sets them from the authenticated agent and ignores values an agent sends. Superuser requests leave them unchanged. `audit_log` receives one row for each create, update, and delete made through the records API on the seven CRM collections, by agents and superusers, with the actor and the changed values. A no-op update and a rejected write add no row. The log is append-only for agents: they can read it through SQL and the records API, and its create, update, and delete rules are superuser-only. Internal relation clears that follow an operator delete are not logged. `enquiries` is logged with less detail, so that the log holds no submitted value; see [Personal data](#personal-data). Stage history is read from `audit_log`; see [examples](skills/dealcontext/references/examples.md).
+Every CRM record has `created_by` and `updated_by`. The server sets them from the authenticated agent and ignores values an agent sends. Superuser requests leave them unchanged. `audit_log` receives one row for each create, update, and delete made through the records API on the eight CRM collections, by agents and superusers, with the actor and the changed values. A no-op update and a rejected write add no row. The log is append-only for agents: they can read it through SQL and the records API, and its create, update, and delete rules are superuser-only. Internal relation clears that follow an operator delete are not logged. `enquiries` is logged with less detail, so that the log holds no submitted value; see [Personal data](#personal-data). Stage history is read from `audit_log`; see [examples](skills/dealcontext/references/examples.md).
 
 `created_by` and `updated_by` are optional relations, so deleting an agent account clears those stamps on its records. `audit_log.actor` is plain text and keeps the ID. PocketBase also refuses to delete an agent while records name it as `owner`. To retire an agent and keep its stamps, change its password instead of deleting the account.
 

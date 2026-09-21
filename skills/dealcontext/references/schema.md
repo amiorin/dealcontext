@@ -11,6 +11,7 @@ Every CRM record has `id`, `created`, `updated`, `created_by`, and `updated_by`.
 | deals | title, stage, owner, currency, status (all required); organization, person, value_minor, expected_close, closed_at, lost_reason |
 | activities | subject, kind, owner, due_at (required); deal, person, organization, done, completed_at, description |
 | notes | body, owner (required); deal, person, organization, source_url |
+| messages | person, owner, channel, direction, body (required); sent_at, source_url |
 
 Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `email`, or `task`. Stage position is unique within its pipeline. A deal belongs to a pipeline through its stage; join `deals.stage = stages.id` and `stages.pipeline = pipelines.id`.
 
@@ -21,6 +22,8 @@ Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `em
 `created_by` and `updated_by` are optional relations to `agents`. For agent requests the server sets both to the authenticated agent on create, and sets `updated_by` on update while `created_by` keeps its stored value. Values sent by an agent are ignored. Superuser requests leave both fields as they are, so records created by a superuser have them empty unless the superuser sets them. If the operator deletes an agent account, these stamps are cleared on its records; `audit_log.actor` keeps the ID.
 
 `people.linkedin_url` is an optional URL for the person's LinkedIn profile. It uses standard URL validation, with no domain restriction. Omitted or cleared values are stored as an empty string.
+
+Messages record actual incoming or outgoing communication. Channel is `linkedin`, `email`, `whatsapp`, `sms`, or `other`; direction is `incoming` or `outgoing`. The required `person` is the external contact in either direction. `body` holds the exact text. `sent_at` is the actual message time and stays empty when unknown; `created` is the recording time. `source_url` is an optional message or thread link. Recording a message sends nothing.
 
 ## Server rules
 
@@ -71,11 +74,11 @@ Auditing differs from the CRM collections so that `audit_log` never holds a subm
 
 ## Deletes
 
-Deletes are superuser-only on all seven CRM collections and on `enquiries`; an agent DELETE returns 403. The operator deletes through the dashboard or with a superuser token. Required relations prevent deleting records still referenced by them. Optional relations are cleared when their target is deleted, and that internal clear is not validated, so a note can be left without a link after the operator deletes its only target. The note rule applies again on that note's next save. The same holds for an enquiry: when the operator deletes its person, the enquiry stays `qualified` with an empty `person`, and its next update must set a person or another status.
+Deletes are superuser-only on all eight CRM collections and on `enquiries`; an agent DELETE returns 403. The operator deletes through the dashboard or with a superuser token. Required relations prevent deleting records still referenced by them. Optional relations are cleared when their target is deleted, and that internal clear is not validated, so a note can be left without a link after the operator deletes its only target. The note rule applies again on that note's next save. The same holds for an enquiry: when the operator deletes its person, the enquiry stays `qualified` with an empty `person`, and its next update must set a person or another status.
 
 ## audit_log
 
-`audit_log` records writes made through the records API on the seven CRM collections, by agents and superusers. `enquiries` is logged with less detail, see [enquiries](#enquiries). Agents can read it through SQL and through the records API. Its create, update, and delete rules are superuser-only, so agents cannot add, change, or remove rows.
+`audit_log` records writes made through the records API on the eight CRM collections, by agents and superusers. `enquiries` is logged with less detail, see [enquiries](#enquiries). Agents can read it through SQL and through the records API. Its create, update, and delete rules are superuser-only, so agents cannot add, change, or remove rows.
 
 | Field | Content |
 | --- | --- |

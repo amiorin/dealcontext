@@ -12,7 +12,7 @@ const CURRENCIES = ("AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BHD BIF BMD
 
 // Custom (non-column) record key that carries the API actor from the request hook to the execute hook.
 const ACTOR_KEY = "_audit_actor";
-const CRM = ["organizations", "people", "pipelines", "stages", "deals", "activities", "notes"];
+const CRM = ["organizations", "people", "pipelines", "stages", "deals", "activities", "notes", "messages"];
 // Collections that hold public input: only these fields reach audit_log, so the log keeps no submitted values.
 const AUDITED = {enquiries: {update: ["status", "person", "deal"], delete: ["status"]}};
 

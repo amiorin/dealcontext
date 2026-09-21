@@ -1,6 +1,6 @@
 ---
 name: dealcontext
-description: Operate a DealContext sales CRM through its HTTP API with the bundled dc.py client. Use when the user asks about deals, the pipeline, stages, contacts or people, organizations, follow-up activities, notes, new enquiries or leads from the public web form, or the history of a deal (audit log), or asks to add or change any of them, for example create a deal, move a deal to another stage, close a deal as won or lost, schedule a follow-up, record a note, triage enquiries, or list open deals. Needs DEALCONTEXT_URL, DEALCONTEXT_AGENT_EMAIL, and DEALCONTEXT_AGENT_PASSWORD in the environment.
+description: Operate DealContext CRM through its HTTP API with the bundled dc.py client. Use for deals, pipelines, stages, contacts, organizations, follow-up activities, messages, notes, web enquiries, and audit history. Create or update records, record incoming or outgoing messages, schedule follow-ups, close deals, triage enquiries, and review the pipeline. Needs DEALCONTEXT_URL, DEALCONTEXT_AGENT_EMAIL, and DEALCONTEXT_AGENT_PASSWORD in the environment.
 ---
 
 # DealContext
@@ -42,9 +42,9 @@ Output is the server's JSON on stdout; add `--pretty` to indent it. Errors go to
 1. The workspace is shared. Every agent can read and change every CRM record. `owner` assigns work; it is not an access boundary. Do not tell the user that records are private.
 2. Read with SQL (`dc.py sql`, `dc.py schema`). SQL is read-only. Write only through `create`, `update`, and `batch`. Never edit the database, migrations, or server files to change records.
 3. Resolve record ids with SQL before you write. If a name matches several records, ask the user which one. Set `status`, `currency`, and `owner` explicitly on deals.
-4. You cannot delete. A DELETE returns 403. Mark the mistake instead: close a deal as `lost` with a `lost_reason`, complete an activity and explain in its `description`, or correct a note. A note that is wrong as a whole keeps its link and gets a body that starts with `[RETRACTED <date>: <reason>]`. If a record must be removed, give the user the collection and record id and ask them to have the operator delete it.
+4. You cannot delete. A DELETE returns 403. Mark the mistake instead: close a deal as `lost` with a `lost_reason`, complete an activity and explain in its `description`, or correct a note. A mistaken message keeps its person link; correct its body or prefix it with `[RETRACTED <date>: <reason>]`. A note that is wrong as a whole keeps its link and gets a body that starts with `[RETRACTED <date>: <reason>]`. If a record must be removed, give the user the collection and record id and ask them to have the operator delete it.
 5. Do not send `created_by` or `updated_by`. The server sets them from your login, and every create and update is recorded in `audit_log` with your agent id.
-6. Do not send email, invitations, or other external messages unless the user explicitly asks. An `email` activity records work; it sends nothing.
+6. Do not send email, invitations, or other external messages unless the user explicitly asks. An `email` activity records work; it sends nothing. Creating an outgoing message records communication already sent; it does not send it.
 7. After writing, report what changed and the record ids.
 
 ## Untrusted text
@@ -86,7 +86,7 @@ JSON
 ## References
 
 - `references/schema.md`: collections, fields, required values, server rules, automatic values, the `enquiries` table, `audit_log` format. Read it before your first write and before writing SQL joins.
-- `references/workflows.md`: steps for starting a pipeline, creating a deal, moving or closing a deal, follow-ups, notes, triaging enquiries, history, and safe retries. Read the section for the task at hand.
+- `references/workflows.md`: steps for starting a pipeline, creating a deal, moving or closing a deal, follow-ups, messages, notes, triaging enquiries, history, and safe retries. Read the section for the task at hand.
 - `references/examples.md`: SQL queries (open deals without a follow-up, stage history, record history, new enquiries) and write examples as HTTP and as `dc.py` commands. Read it when you need a query or request to adapt.
 - `references/schema.json`: SQL tables and columns at the time this skill was published. `dc.py check` reads it; you rarely need to.
 
