@@ -5,7 +5,7 @@ Every CRM record has `id`, `created`, `updated`, `created_by`, and `updated_by`.
 | Collection | Fields |
 | --- | --- |
 | organizations | name (required), website, address, owner (required agent ID) |
-| people | name (required), email, phone, organization, owner (required) |
+| people | name (required), email, phone, linkedin_url, organization, owner (required) |
 | pipelines | name (required, unique), active |
 | stages | name (required), pipeline (required), position (nonnegative integer), probability (0–100) |
 | deals | title, stage, owner, currency, status (all required); organization, person, value_minor, expected_close, closed_at, lost_reason |
@@ -19,6 +19,8 @@ Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `em
 `agents` is a password-auth collection with a required display `name`. Superusers provision and manage agents. Auth records are excluded from SQL. Use the authenticated record ID for ownership; ask the operator for other agent IDs when reassigning.
 
 `created_by` and `updated_by` are optional relations to `agents`. For agent requests the server sets both to the authenticated agent on create, and sets `updated_by` on update while `created_by` keeps its stored value. Values sent by an agent are ignored. Superuser requests leave both fields as they are, so records created by a superuser have them empty unless the superuser sets them. If the operator deletes an agent account, these stamps are cleared on its records; `audit_log.actor` keeps the ID.
+
+`people.linkedin_url` is an optional URL for the person's LinkedIn profile. It uses standard URL validation, with no domain restriction. Omitted or cleared values are stored as an empty string.
 
 ## Server rules
 

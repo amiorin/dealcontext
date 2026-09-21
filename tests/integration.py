@@ -106,6 +106,15 @@ def main():
             request('POST', '/api/collections/agents/records', {'name': 'Forbidden'}, token, expected=403)
             org = create('organizations', {'name': 'Acme', 'owner': agent['id']})
             person = create('people', {'name': 'Ada', 'email': 'ada@example.com', 'organization': org['id'], 'owner': agent['id']})
+            with item('people LinkedIn URL is optional, validated, and SQL-readable'):
+                assert person['linkedin_url'] == ''
+                profile = 'https://www.linkedin.com/in/ada-example/'
+                updated = request('PATCH', one('people', person), {'linkedin_url': profile}, token)
+                assert updated['linkedin_url'] == profile
+                assert sql(f"SELECT linkedin_url FROM people WHERE id = '{person['id']}' LIMIT 1")['rows'] == [[profile]]
+                reject('PATCH', one('people', person), {'linkedin_url': 'not-a-url'}, ['linkedin_url'])
+                cleared = request('PATCH', one('people', person), {'linkedin_url': ''}, token)
+                assert cleared['linkedin_url'] == ''
             pipeline = create('pipelines', {'name': 'Sales', 'active': True})
             first = create('stages', {'name': 'Qualified', 'pipeline': pipeline['id'], 'position': 0})
             second = create('stages', {'name': 'Negotiation', 'pipeline': pipeline['id'], 'position': 1})
