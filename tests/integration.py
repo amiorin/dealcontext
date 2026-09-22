@@ -126,6 +126,23 @@ def main():
                 reject('PATCH', one('people', person), {'job_title': 'x' * 201}, ['job_title'])
                 cleared = request('PATCH', one('people', person), {'job_title': ''}, token)
                 assert cleared['job_title'] == ''
+            with item('people pronouns are optional, validated, SQL-readable, and audited'):
+                assert person['pronouns'] == ''
+                updated = request('PATCH', one('people', person), {'pronouns': 'she/they'}, token)
+                assert updated['pronouns'] == 'she/they'
+                assert sql(f"SELECT pronouns FROM people WHERE id = '{person['id']}' LIMIT 1")['rows'] == [['she/they']]
+                changes = audit('people', person, 'update')[-1]['changes']
+                assert changes['before']['pronouns'] == ''
+                assert changes['after']['pronouns'] == 'she/they'
+                before = audit_count()
+                reject('PATCH', one('people', person), {'pronouns': 'x' * 101}, ['pronouns'])
+                assert audit_count() == before
+                assert request('GET', one('people', person), token=token)['pronouns'] == 'she/they'
+                cleared = request('PATCH', one('people', person), {'pronouns': ''}, token)
+                assert cleared['pronouns'] == ''
+                changes = audit('people', person, 'update')[-1]['changes']
+                assert changes['before']['pronouns'] == 'she/they'
+                assert changes['after']['pronouns'] == ''
             pipeline = create('pipelines', {'name': 'Sales', 'active': True})
             first = create('stages', {'name': 'Qualified', 'pipeline': pipeline['id'], 'position': 0})
             second = create('stages', {'name': 'Negotiation', 'pipeline': pipeline['id'], 'position': 1})

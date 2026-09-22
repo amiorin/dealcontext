@@ -5,7 +5,7 @@ Every CRM record has `id`, `created`, `updated`, `created_by`, and `updated_by`.
 | Collection | Fields |
 | --- | --- |
 | organizations | name (required), website, address, owner (required agent ID) |
-| people | name (required), email, phone, linkedin_url, job_title, organization, owner (required) |
+| people | name (required), email, phone, linkedin_url, job_title, pronouns, organization, owner (required) |
 | pipelines | name (required, unique), active |
 | stages | name (required), pipeline (required), position (nonnegative integer), probability (0–100) |
 | deals | title, stage, owner, currency, status (all required); organization, person, value_minor, expected_close, closed_at, lost_reason |
@@ -24,6 +24,8 @@ Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `em
 `people.linkedin_url` is an optional URL for the person's LinkedIn profile. It uses standard URL validation, with no domain restriction. Omitted or cleared values are stored as an empty string.
 
 `people.job_title` is optional text, at most 200 characters, for the person's current title (for example `CTO`). Store titles here; use `organization` to link the company. It does not grant access permissions. Omitted or cleared values are stored as an empty string. Existing role notes remain historical evidence; copy a confirmed current title into this field through the records API.
+
+`people.pronouns` is optional text, at most 100 characters, for explicitly confirmed pronouns (for example `he/him`, `she/her`, or `they/them`). It is free text, not a fixed list or a gender field. Omitted or cleared values are stored as an empty string, meaning unknown. Existing contacts keep empty pronouns until explicitly confirmed; there is no automatic backfill. See [workflows.md](workflows.md#record-pronouns) for recording and using this field.
 
 Messages record actual incoming or outgoing communication. Channel is `linkedin`, `email`, `whatsapp`, `sms`, or `other`; direction is `incoming` or `outgoing`. The required `person` is the external contact in either direction. `body` holds the exact text. `sent_at` is the actual message time and stays empty when unknown; `created` is the recording time. `source_url` is an optional message or thread link. Recording a message sends nothing.
 

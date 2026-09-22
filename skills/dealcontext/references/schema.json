@@ -110,6 +110,7 @@
       {"name": "organization", "type": "TEXT"},
       {"name": "owner", "type": "TEXT"},
       {"name": "phone", "type": "TEXT"},
+      {"name": "pronouns", "type": "TEXT"},
       {"name": "updated", "type": "TEXT"},
       {"name": "updated_by", "type": "TEXT"}
     ]},

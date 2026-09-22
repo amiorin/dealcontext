@@ -12,6 +12,12 @@ Find the organization and person by SQL. Resolve ambiguous matches before writin
 
 Write the deal and everything that belongs to it in one batch (`POST /api/batch`, or `dc.py batch`): missing contacts first, then the deal, then its first activity if the user requested a follow-up, then a note if there is evidence to record. Choose the id of each new record that a later request refers to: take a 15-character `[a-z0-9]` id from `dc.py newid`, send it as `id` in the create body, and use it in the later relations. A batch holds at most 20 requests and is one transaction: either every record is saved, with one `audit_log` row each, or none is. When a batch fails, the response names the failed request and its error; fix that request and send the whole batch again.
 
+## Record pronouns
+
+Resolve the person by SQL and read their current `pronouns`. When the person or user explicitly confirms pronouns, PATCH `people.pronouns` through the records API with that text (at most 100 characters). Use an empty string to clear the field. Leave unknown values empty; do not infer pronouns from a name or gender, or automatically backfill them from historical notes or messages.
+
+Read `pronouns` when preparing notes, activity descriptions, or replies about a person. Use confirmed pronouns when present; otherwise use the person's name or neutral wording. Preserve the exact text of recorded messages even when it uses different pronouns.
+
 ## Move or close a deal
 
 Look up the deal and destination stage IDs. PATCH the deal's `stage`; moving to a stage in another pipeline also changes its pipeline. To close a deal, PATCH status to `won` or `lost`. The server sets `closed_at` to the current UTC time when you leave it empty; send `closed_at` yourself only when the deal closed at a different time. Provide `lost_reason` when the deal is lost and the reason is known. A won deal cannot have a `lost_reason`. To reopen a deal, PATCH `status: open` together with `closed_at: ""` and `lost_reason: ""`; the server does not clear them and rejects the request otherwise. These rules are server-enforced and violations return HTTP 400.

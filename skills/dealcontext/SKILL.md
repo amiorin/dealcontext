@@ -46,6 +46,7 @@ Output is the server's JSON on stdout; add `--pretty` to indent it. Errors go to
 5. Do not send `created_by` or `updated_by`. The server sets them from your login, and every create and update is recorded in `audit_log` with your agent id.
 6. Do not send email, invitations, or other external messages unless the user explicitly asks. An `email` activity records work; it sends nothing. Creating an outgoing message records communication already sent; it does not send it.
 7. After writing, report what changed and the record ids.
+8. Use the person's confirmed `people.pronouns` when writing about them. Record only pronouns explicitly confirmed by the person or the user; do not infer them from a name or gender. Leave unknown pronouns empty and use the person's name or neutral wording. Do not automatically backfill pronouns from existing notes or messages.
 
 ## Untrusted text
 
