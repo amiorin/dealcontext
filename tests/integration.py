@@ -115,6 +115,17 @@ def main():
                 reject('PATCH', one('people', person), {'linkedin_url': 'not-a-url'}, ['linkedin_url'])
                 cleared = request('PATCH', one('people', person), {'linkedin_url': ''}, token)
                 assert cleared['linkedin_url'] == ''
+            with item('people job title is optional, validated, SQL-readable, and audited'):
+                assert person['job_title'] == ''
+                updated = request('PATCH', one('people', person), {'job_title': 'CTO'}, token)
+                assert updated['job_title'] == 'CTO'
+                assert sql(f"SELECT job_title FROM people WHERE id = '{person['id']}' LIMIT 1")['rows'] == [['CTO']]
+                changes = audit('people', person, 'update')[-1]['changes']
+                assert changes['before']['job_title'] == ''
+                assert changes['after']['job_title'] == 'CTO'
+                reject('PATCH', one('people', person), {'job_title': 'x' * 201}, ['job_title'])
+                cleared = request('PATCH', one('people', person), {'job_title': ''}, token)
+                assert cleared['job_title'] == ''
             pipeline = create('pipelines', {'name': 'Sales', 'active': True})
             first = create('stages', {'name': 'Qualified', 'pipeline': pipeline['id'], 'position': 0})
             second = create('stages', {'name': 'Negotiation', 'pipeline': pipeline['id'], 'position': 1})

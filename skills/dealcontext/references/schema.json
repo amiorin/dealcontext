@@ -104,6 +104,7 @@
       {"name": "created_by", "type": "TEXT"},
       {"name": "email", "type": "TEXT"},
       {"name": "id", "type": "TEXT"},
+      {"name": "job_title", "type": "TEXT"},
       {"name": "linkedin_url", "type": "TEXT"},
       {"name": "name", "type": "TEXT"},
       {"name": "organization", "type": "TEXT"},
