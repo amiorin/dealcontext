@@ -73,7 +73,13 @@ python3 scripts/dc.py whoami   # logs in; prints the agent ID, name, and server 
 python3 scripts/dc.py check    # exit 0: the skill's schema snapshot matches the server; exit 3: lists the differences
 ```
 
-`dc.py` uses only the Python standard library. It caches the login token in `$XDG_CACHE_HOME/dealcontext/` (default `~/.cache/dealcontext/`) with mode 0600, never prints the password or token, and has no delete command. `dc.py logout` removes the cached token. When `check` reports differences, the server is newer or older than the installed skill: the live schema is authoritative, and updating the skill brings the reference files back in line.
+`dc.py` uses only the Python standard library. It caches the login token in `$XDG_CACHE_HOME/dealcontext/` (default `~/.cache/dealcontext/`) with mode 0600, never prints the password or token, and has no delete command. `dc.py logout` removes the cached token and version metadata. When `check` reports differences, the server is newer or older than the installed skill: the live schema is authoritative, and updating the skill brings the reference files back in line.
+
+Remote commands automatically compare the installed skill revision with `GET /api/dealcontext/skill-version`, which requires an agent login and returns `{"recommendedRevision":1}`. If the server recommends a newer revision, the client warns on stderr with update instructions; normal command JSON and exit codes are unchanged. The assistant must relay that warning to the user. The client never installs updates or blocks operations because of a revision mismatch.
+
+Version metadata is cached separately from the login token for five minutes, scoped to the server URL, account email, and installed skill revision. `dc.py check` always refreshes it and still compares the live schema with the snapshot. `newid` and `logout` make no requests. With an older server returning 404, commands continue silently and `dc.py check` still provides schema comparison. Other metadata failures produce a warning and the requested command continues.
+
+Already-installed clients need one update before automatic notifications work. Their existing `dc.py check` detects schema differences, such as the new `agent_directory`, but cannot detect a release that changes only workflows or documentation. Update with `npx skills update dealcontext -g` for a global CLI install, or replace a manually copied skill directory with the current `skills/dealcontext` directory.
 
 The client sends `User-Agent: DealContext/1.0` on every request, including login.
 This identifies agent traffic to proxies that reject Python's generic user-agent.
@@ -291,6 +297,8 @@ python3 docker/smoke.py restore --image dealcontext:ci   # the restore drill
 ```
 
 ## Verify
+
+For a change that users need in their installed skill, increment the recommendation in `pb_hooks/skill_version.pb.js` and `SKILL_REVISION` in `skills/dealcontext/scripts/dc.py` together. The skill revision is independent of the server release: unrelated releases do not need a bump. Tests check that the published recommendation and bundled client agree.
 
 ```sh
 python3 tests/integration.py --binary ../pocketcontext/bin/pocketcontext

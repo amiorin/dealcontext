@@ -5,6 +5,7 @@ import contextlib
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -86,7 +87,7 @@ onRecordDeleteExecute((e) => {
         base = f'http://127.0.0.1:{port}'
         log = open(Path(tmp) / 'server.log', 'w+')
         server = subprocess.Popen(common + ['serve', '--http', f'127.0.0.1:{port}'], cwd=ROOT, stdout=log, stderr=log)
-        def request(method, path, body=None, token=None, expected=200):
+        def request(method, path, body=None, token=None, expected=200, expected_headers=None):
             headers = {'Content-Type': 'application/json'}
             if token:
                 headers['Authorization'] = token
@@ -94,6 +95,8 @@ onRecordDeleteExecute((e) => {
             try:
                 with urllib.request.urlopen(req, timeout=10) as response:
                     status, raw = response.status, response.read()
+                    for name, value in (expected_headers or {}).items():
+                        assert response.headers.get(name) == value, (name, response.headers.get(name))
             except urllib.error.HTTPError as error:
                 status, raw = error.code, error.read()
             assert status in (expected if isinstance(expected, tuple) else (expected,)), (method, path, status, raw.decode())
@@ -138,6 +141,19 @@ onRecordDeleteExecute((e) => {
                 return rows
             def audit_count():
                 return sql('SELECT count(*) FROM audit_log')['rows'][0][0]
+
+            with item('skill revision metadata is available only to authenticated agents'):
+                path = '/api/dealcontext/skill-version'
+                client_source = (ROOT / 'skills/dealcontext/scripts/dc.py').read_text()
+                revision_match = re.search(r'^SKILL_REVISION = ([1-9][0-9]*)$', client_source, re.MULTILINE)
+                assert revision_match, 'bundled client must declare a positive integer SKILL_REVISION'
+                expected_revision = int(revision_match.group(1))
+                request('GET', path, expected=401)
+                request('GET', path, token='invalid-token', expected=401)
+                request('GET', path, token=admin, expected=403)
+                for auth in (token, token2):
+                    metadata = request('GET', path, token=auth, expected_headers={'Cache-Control': 'no-store'})
+                    assert metadata == {'recommendedRevision': expected_revision}, metadata
 
             with item('agent directory backfills existing accounts and exposes only IDs and names'):
                 expected_names = {'legacyagent0001': 'Existing agent', agent['id']: 'Test agent', agent2['id']: 'Second agent'}
@@ -697,7 +713,7 @@ onRecordDeleteExecute((e) => {
                 batch_fails([post('notes', {'body': 'kept out', 'deal': dee_deal['id'], 'owner': agent['id']}),
                              post('missing_collection', {'expected_close': 'invalid'})], 1, 404)
                 assert counts() == before, (before, counts())
-            print('PASS: provisioning, CRM BaaS writes, authorization, validation, SQL joins, stage moves, activities, notes, closing deal, '
+            print('PASS: provisioning, authenticated skill revision metadata, CRM BaaS writes, authorization, validation, SQL joins, stage moves, activities, notes, closing deal, '
                   'deal and activity lifecycle rules, server-filled closed_at and completed_at, reopening, ISO 4217 currency, linked notes, '
                   'person and organization consistency, superuser-only deletes, created_by and updated_by stamps, '
                   'append-only audit_log for create, update, and delete, SQL stage history, agents table excluded from SQL, '

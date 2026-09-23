@@ -17,6 +17,8 @@ import os
 from pathlib import Path
 import secrets
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +29,10 @@ STAMPS = ('created_by', 'updated_by')
 ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 TIMEOUT = 30
 USER_AGENT = 'DealContext/1.0'
+# Bump with the server recommendation when installed skill behavior or guidance changes.
+SKILL_REVISION = 1
+SKILL_CHECK_TTL = 300
+SKILL_VERSION_PATH = '/api/dealcontext/skill-version'
 hidden = []  # The password and tokens. say() masks them in everything it prints.
 
 
@@ -101,7 +107,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 opener = urllib.request.build_opener(NoRedirect)
 
 
-def send(cfg, method, path, body=None, token=None):
+def send(cfg, method, path, body=None, token=None, timeout=TIMEOUT):
     """Send one request. Returns (status, parsed JSON body, or the text when it is not JSON)."""
     headers = {'Content-Type': 'application/json', 'User-Agent': USER_AGENT}
     if token:
@@ -109,7 +115,7 @@ def send(cfg, method, path, body=None, token=None):
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(cfg['url'] + path, data=data, headers=headers, method=method)
     try:
-        with opener.open(request, timeout=TIMEOUT) as response:
+        with opener.open(request, timeout=timeout) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as error:
         status, raw = error.code, error.read()
@@ -188,6 +194,81 @@ def must(cfg, method, path, body=None):
 
 # Commands
 
+def skill_cache_file(cfg):
+    return cache_file(cfg).with_suffix('.skill-version.json')
+
+
+def valid_revision(value):
+    return type(value) is int and 0 < value <= 2147483647
+
+
+def skill_advisory(cfg, force=False):
+    """Check a small authenticated recommendation; never gate commands on a revision."""
+    path = skill_cache_file(cfg)
+    cached = None
+    if not force:
+        try:
+            candidate = json.loads(path.read_text())
+            if (isinstance(candidate, dict)
+                    and candidate.get('installedRevision') == SKILL_REVISION
+                    and type(candidate.get('checkedAt')) in (int, float)
+                    and 0 <= time.time() - candidate['checkedAt'] < SKILL_CHECK_TTL
+                    and 'recommendedRevision' in candidate
+                    and (candidate['recommendedRevision'] is None or valid_revision(candidate['recommendedRevision']))):
+                cached = candidate
+        except (OSError, ValueError, TypeError):
+            pass
+    if cached is None:
+        # Authentication errors remain normal command errors. Never retry a bad
+        # password merely because the advisory request failed.
+        session = load_session(cfg) or login(cfg)
+        for attempt in range(2):
+            try:
+                status, data = send(cfg, 'GET', SKILL_VERSION_PATH, token=session['token'], timeout=3)
+            except Fail:
+                status, data = 0, None
+            if status == 401 and attempt == 0:
+                session = login(cfg)
+                continue
+            break
+        if status == 404:
+            recommended = None  # Older servers have no revision endpoint.
+        elif status == 200 and isinstance(data, dict) and valid_revision(data.get('recommendedRevision')):
+            recommended = data['recommendedRevision']
+        else:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            say('WARNING: could not verify the recommended DealContext skill revision. '
+                'Continuing; run `dc.py check` to retry.')
+            return
+        cached = {'installedRevision': SKILL_REVISION, 'recommendedRevision': recommended, 'checkedAt': time.time()}
+        # A separate atomic cache keeps advisory data out of the token cache and
+        # avoids partial JSON when commands run concurrently. Cache failures are optional.
+        temporary = None
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.skill-version-', delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(cached, handle)
+            os.replace(temporary, path)
+        except OSError:
+            pass
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    recommended = cached['recommendedRevision']
+    if recommended is not None and recommended > SKILL_REVISION:
+        say(f'WARNING: DealContext recommends skill revision {recommended}; installed revision is {SKILL_REVISION}. '
+            'Update with `npx skills update dealcontext -g` if installed with the skills CLI, '
+            'or replace your installed skill with the latest skills/dealcontext directory from the DealContext repository. '
+            'This is advisory; the command will continue.')
+
+
 def read_json(text, kind, what):
     if text == '-':
         text = sys.stdin.read()
@@ -256,11 +337,23 @@ def run(args):
         print(''.join(secrets.choice(ID_ALPHABET) for _ in range(15)))
         return 0
     if args.command == 'logout':
-        path = cache_file(config(ENV[:2]))
+        cfg = config(ENV[:2])
+        path = cache_file(cfg)
         path.unlink(missing_ok=True)
+        skill_cache_file(cfg).unlink(missing_ok=True)
         say(f'removed {path}', sys.stdout)
         return 0
     cfg = config()
+    # Reject malformed writes before authentication or any network request.
+    body = None
+    if args.command in ('create', 'update'):
+        body = record_body(args.json)
+    elif args.command == 'batch':
+        requests = read_json(args.json, list, 'the batch')
+        if not all(isinstance(entry, dict) for entry in requests):
+            raise Fail(2, 'each batch entry must be an object with method, url, and body')
+        body = {'requests': requests}
+    skill_advisory(cfg, force=args.command == 'check')
     if args.command == 'check':
         return check(cfg)
     if args.command == 'whoami':
@@ -279,14 +372,11 @@ def run(args):
     elif args.command == 'get':
         data = must(cfg, 'GET', records(args.collection, args.id))
     elif args.command == 'create':
-        data = must(cfg, 'POST', records(args.collection), record_body(args.json))
+        data = must(cfg, 'POST', records(args.collection), body)
     elif args.command == 'update':
-        data = must(cfg, 'PATCH', records(args.collection, args.id), record_body(args.json))
+        data = must(cfg, 'PATCH', records(args.collection, args.id), body)
     elif args.command == 'batch':
-        requests = read_json(args.json, list, 'the batch')
-        if not all(isinstance(entry, dict) for entry in requests):
-            raise Fail(2, 'each batch entry must be an object with method, url, and body')
-        data = must(cfg, 'POST', '/api/batch', {'requests': requests})
+        data = must(cfg, 'POST', '/api/batch', body)
     say(dump(data, args.pretty), sys.stdout)
     return 0
 

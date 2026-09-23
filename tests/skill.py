@@ -28,6 +28,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills' / 'dealcontext'
+SKILL_REVISION = int(re.search(r'^SKILL_REVISION = (\d+)$', (SKILL / 'scripts' / 'dc.py').read_text(), re.MULTILINE).group(1))
 EMAIL, PASSWORD = 'skill-agent@example.com', 'SkillAgentPassword123!'
 FORBIDDEN = ['POCKETBASE_ADMIN', '.envrc', '.env.admin', '_superusers', 'superuser upsert']
 REGENERATE = 'If a migration changed the schema, regenerate references/schema.json: python3 tests/skill.py --binary <pocketcontext> --write-schema'
@@ -116,6 +117,9 @@ class Conflict(BaseHTTPRequestHandler):
 
     do_PATCH = do_POST
 
+    def do_GET(self):
+        self.reply(404, {'message': 'Not found'})
+
     def log_message(self, *args):
         pass
 
@@ -123,6 +127,10 @@ class Conflict(BaseHTTPRequestHandler):
 class ClientIdentityGate(Conflict):
     """Model an edge filter that rejects the generic Python user-agent."""
     requests = []
+
+    def do_GET(self):
+        ClientIdentityGate.requests.append((self.path, self.headers.get('User-Agent', ''), self.headers.get('Authorization')))
+        self.reply(200, {'recommendedRevision': SKILL_REVISION})
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get('Content-Length') or 0))
@@ -136,6 +144,41 @@ class ClientIdentityGate(Conflict):
             self.reply(200, {'columns': ['1'], 'rows': [[1]], 'truncated': False})
         else:
             self.reply(401, {'message': 'Authentication required'})
+
+
+class SkillVersion(Conflict):
+    """Metadata fixture with independent CRM success and unchanged schema."""
+    token = 'version-test-token-0123456789'
+    metadata = {'recommendedRevision': SKILL_REVISION}
+    status = 200
+    requests = []
+    schema = None
+
+    def do_GET(self):
+        cls = type(self)
+        cls.requests.append((self.path, self.headers.get('Authorization'), self.headers.get('User-Agent')))
+        if self.path == '/api/dealcontext/skill-version':
+            if cls.status == 'disconnect':
+                self.close_connection = True
+                return
+            self.reply(cls.status, cls.metadata)
+        elif self.path == '/api/context/schema':
+            self.reply(200, cls.schema)
+        else:
+            self.reply(200, {'id': 'stubrecord00001'})
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        if self.path.endswith('/auth-with-password') or self.path.endswith('/auth-refresh'):
+            self.reply(200, {'token': self.token, 'record': {'id': 'stubagent000001', 'name': 'Stub'}})
+        elif self.path == '/api/context/query':
+            self.reply(200, {'columns': ['1'], 'rows': [[1]], 'truncated': False})
+        elif self.path == '/api/batch':
+            self.reply(200, [])
+        else:
+            self.reply(200, {'id': 'stubrecord00001'})
+
+    do_PATCH = do_POST
 
 
 def frontmatter(text):
@@ -193,6 +236,118 @@ def schema_text(schema):
     return '{\n  "tables": [\n' + ',\n'.join(tables) + '\n  ]\n}\n'
 
 
+def version_checks(dc, tmp, installed, tokens):
+    stub = HTTPServer(('127.0.0.1', 0), SkillVersion)
+    thread = threading.Thread(target=stub.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{stub.server_port}'
+    cache = tmp / 'version-cache'
+    options = {'DEALCONTEXT_URL': base, 'XDG_CACHE_HOME': str(cache)}
+    SkillVersion.schema = json.loads((installed / 'references' / 'schema.json').read_text())
+    tokens.add(SkillVersion.token)
+
+    def calls():
+        return sum(path == '/api/dealcontext/skill-version' for path, _, _ in SkillVersion.requests)
+
+    def files():
+        return sorted(cache.glob('dealcontext/*.skill-version.json'))
+
+    def query(**extra):
+        stdout, stderr = dc('sql', 'SELECT 1', **{**options, **extra})
+        assert json.loads(stdout) == {'columns': ['1'], 'rows': [[1]], 'truncated': False}, stdout
+        return stderr
+
+    def expire(path):
+        data = json.loads(path.read_text())
+        data['checkedAt'] = time.time() - 301
+        path.write_text(json.dumps(data))
+
+    try:
+        with item('matching skill revision is silent, authenticated, privately cached without credentials'):
+            assert query() == ''
+            (path,) = files()
+            assert calls() == 1
+            assert SkillVersion.requests[0] == ('/api/dealcontext/skill-version', SkillVersion.token, 'DealContext/1.0')
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            data = json.loads(path.read_text())
+            assert data['installedRevision'] == SKILL_REVISION and data['recommendedRevision'] == SKILL_REVISION
+            assert PASSWORD not in path.read_text() and SkillVersion.token not in path.read_text() and EMAIL not in path.read_text()
+            assert query() == '' and calls() == 1
+        with item('new revision warns without schema changes, preserves JSON, and warns from cache'):
+            SkillVersion.metadata = {'recommendedRevision': SKILL_REVISION + 1, 'message': 'UNTRUSTED_VERSION_MESSAGE', 'updateCommand': 'UNTRUSTED_VERSION_COMMAND'}
+            expire(path)
+            warning = query()
+            assert 'WARNING' in warning and 'update' in warning.lower(), warning
+            assert 'UNTRUSTED_VERSION' not in warning, warning
+            assert calls() == 2
+            assert query() == warning and calls() == 2
+            for command in [('whoami',), ('schema',), ('get', 'deals', 'stubrecord00001'),
+                            ('create', 'pipelines', '{"name":"Sales"}'),
+                            ('update', 'pipelines', 'stubrecord00001', '{"name":"Sales"}'), ('batch', '[]')]:
+                stdout, stderr = dc(*command, **options)
+                json.loads(stdout)
+                assert stderr == warning, (command, stderr)
+            assert calls() == 2
+            stdout, stderr = dc('check', **options)
+            assert stdout.startswith('OK') and stderr == warning and calls() == 3, (stdout, stderr)
+        with item('check refreshes fresh metadata; newer installed client gets no downgrade prompt'):
+            SkillVersion.metadata = {'recommendedRevision': SKILL_REVISION}
+            stdout, stderr = dc('check', **options)
+            assert stdout.startswith('OK') and stderr == '' and calls() == 4
+            script = installed / 'scripts' / 'dc.py'
+            original = script.read_text()
+            try:
+                assert f'SKILL_REVISION = {SKILL_REVISION}' in original
+                script.write_text(original.replace(f'SKILL_REVISION = {SKILL_REVISION}', f'SKILL_REVISION = {SKILL_REVISION + 2}'))
+                assert query() == '' and calls() == 5
+                assert json.loads(path.read_text())['installedRevision'] == SKILL_REVISION + 2
+            finally:
+                script.write_text(original)
+            assert query() == '' and calls() == 6
+        with item('revision cache is isolated by email and server URL'):
+            assert query(DEALCONTEXT_AGENT_EMAIL='second-agent@example.com') == '' and calls() == 7
+            assert query(DEALCONTEXT_URL=base.replace('127.0.0.1', 'localhost')) == '' and calls() == 8
+            assert len(files()) == 3
+        with item('older servers continue silently and cache absent endpoint briefly'):
+            SkillVersion.status = 404
+            expire(path)
+            assert query() == '' and calls() == 9
+            assert json.loads(path.read_text())['recommendedRevision'] is None
+            assert query() == '' and calls() == 9
+            expire(path)
+            assert query() == '' and calls() == 10
+        with item('HTTP, transport, and malformed metadata errors are advisory, sanitized, and retried'):
+            failures = [(503, {'message': 'UNTRUSTED_VERSION_ERROR'}), ('disconnect', {}),
+                        (200, {}), (200, {'recommendedRevision': True}),
+                        (200, {'recommendedRevision': 0}), (200, {'recommendedRevision': -1}),
+                        (200, {'recommendedRevision': 1.5}), (200, {'recommendedRevision': '2'}),
+                        (200, ['UNTRUSTED_VERSION_ERROR']), (200, 'UNTRUSTED_VERSION_ERROR')]
+            for status, metadata in failures:
+                SkillVersion.status, SkillVersion.metadata = 200, {'recommendedRevision': SKILL_REVISION}
+                dc('check', **options)
+                expire(path)
+                SkillVersion.status, SkillVersion.metadata = status, metadata
+                before = calls()
+                for _ in range(2):
+                    warning = query()
+                    assert 'WARNING' in warning and 'UNTRUSTED_VERSION' not in warning, warning
+                    assert not path.exists(), 'errors must not leave stale successful metadata'
+                assert calls() == before + 2
+        with item('newid and logout do not request metadata; logout clears both caches'):
+            SkillVersion.status, SkillVersion.metadata = 200, {'recommendedRevision': SKILL_REVISION}
+            query()
+            assert path.exists()
+            before = calls()
+            dc('newid', **options)
+            dc('logout', **{**options, 'DEALCONTEXT_AGENT_PASSWORD': None})
+            assert calls() == before and not path.exists()
+            assert not path.with_name(path.name.replace('.skill-version.json', '.json')).exists()
+    finally:
+        stub.shutdown()
+        stub.server_close()
+        thread.join()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--binary', required=True)
@@ -226,7 +381,7 @@ def main():
             return json.loads(dc(*argv, **options)[0])
 
         def session_files():
-            return sorted(cache.glob('*.json')) if cache.exists() else []
+            return sorted(path for path in cache.glob('*.json') if not path.name.endswith('.skill-version.json')) if cache.exists() else []
 
         def break_token(path):
             """Replace the cached token with one the server rejects, as if it had expired."""
@@ -271,7 +426,7 @@ def main():
             assert session_file.read_text() == before
         with item('without XDG_CACHE_HOME the cache is under ~/.cache/dealcontext'):
             out('whoami', XDG_CACHE_HOME=None)
-            (home_file,) = (tmp / 'home' / '.cache' / 'dealcontext').glob('*.json')
+            (home_file,) = (path for path in (tmp / 'home' / '.cache' / 'dealcontext').glob('*.json') if not path.name.endswith('.skill-version.json'))
             assert stat.S_IMODE(home_file.stat().st_mode) == 0o600
             tokens.add(json.loads(home_file.read_text())['token'])
         with item('check exits 0 against a server built from the current migrations. ' + REGENERATE):
@@ -358,6 +513,16 @@ def main():
             token = json.loads(session_file.read_text())['token']
             tokens.add(token)
             return not token.startswith('expired.')
+        with item('expired metadata plus rejected token refreshes authentication and continues the command'):
+            version_file = session_file.with_suffix('.skill-version.json')
+            metadata = json.loads(version_file.read_text())
+            metadata['checkedAt'] = 0
+            version_file.write_text(json.dumps(metadata))
+            break_token(session_file)
+            stdout, stderr = dc('sql', 'SELECT count(*) FROM deals')
+            assert json.loads(stdout)['rows'] == [[1]] and valid_token() and stderr == '', stderr
+            assert json.loads(version_file.read_text())['recommendedRevision'] == SKILL_REVISION
+            assert json.loads(version_file.read_text())['checkedAt'] > 0
         with item('a rejected token (401 from the SQL endpoint): log in once, retry once'):
             break_token(session_file)
             assert out('sql', 'SELECT count(*) FROM deals')['rows'] == [[1]] and valid_token()
@@ -389,6 +554,7 @@ def main():
                 assert result['rows'] == [[1]], result
                 assert ClientIdentityGate.requests == [
                     ('/api/collections/agents/auth-with-password', 'DealContext/1.0', None),
+                    ('/api/dealcontext/skill-version', 'DealContext/1.0', 'identity-test-token-0123456789'),
                     ('/api/context/query', 'DealContext/1.0', 'identity-test-token-0123456789'),
                 ], ClientIdentityGate.requests
                 tokens.add('identity-test-token-0123456789')
@@ -396,6 +562,8 @@ def main():
                 stub.shutdown()
                 stub.server_close()
                 thread.join()
+
+        version_checks(dc, tmp, installed, tokens)
 
         with item('HTTP 409 exits 4, also inside a batch (stub server: the real 409 needs two racing writes)'):
             stub = HTTPServer(('127.0.0.1', 0), Conflict)
@@ -421,7 +589,7 @@ def main():
             for number, text in enumerate(outputs):
                 assert PASSWORD not in text and not [token for token in tokens if token in text], f'secret in the output of dc.py call number {number}'
         print('PASS: skill files, links, frontmatter, no operator credentials; dc.py from a copy outside the repository: configuration errors, '
-              'whoami, token cache mode and reuse, check against the live schema, schema, create, update, get, stamp removal, HTTP errors, '
+              'whoami, token cache mode and reuse, advisory skill revisions and cache isolation, check against the live schema, schema, create, update, get, stamp removal, HTTP errors, '
               'SQL NULL and truncation warning, atomic batch success and failure, recovery from a rejected token, 409 exit code, logout, no secrets in output')
 
 
