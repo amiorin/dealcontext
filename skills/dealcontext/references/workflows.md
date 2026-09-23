@@ -12,6 +12,12 @@ Find the organization and person by SQL. Resolve ambiguous matches before writin
 
 Write the deal and everything that belongs to it in one batch (`POST /api/batch`, or `dc.py batch`): missing contacts first, then the deal, then its first activity if the user requested a follow-up, then a note if there is evidence to record. Choose the id of each new record that a later request refers to: take a 15-character `[a-z0-9]` id from `dc.py newid`, send it as `id` in the create body, and use it in the later relations. A batch holds at most 20 requests and is one transaction: either every record is saved, with one `audit_log` row each, or none is. When a batch fails, the response names the failed request and its error; fix that request and send the whole batch again.
 
+## Resolve owners and reassign work
+
+Use `dc.py whoami` for your own account ID. Query `agent_directory` for other account IDs and display names; when the user supplies a name, match it with SQL and resolve duplicate matches with the user. Names are labels, not identifiers. To reassign a record, read its current owner and PATCH its `owner` with the chosen account ID. Ownership assigns responsibility without restricting visibility. Agents cannot edit the directory; an operator changes the account name, and the directory updates automatically.
+
+Join owners and `created_by`/`updated_by` to the directory when presenting records. Keep the ID alongside the name where it matters for identification. Use `LEFT JOIN` so a missing name never hides the underlying record; empty stamps and deleted accounts can have no matching name.
+
 ## Record pronouns
 
 Resolve the person by SQL and read their current `pronouns`. When the person or user explicitly confirms pronouns, PATCH `people.pronouns` through the records API with that text (at most 100 characters). Use an empty string to clear the field. Leave unknown values empty; do not infer pronouns from a name or gender, or automatically backfill them from historical notes or messages.
@@ -52,7 +58,7 @@ Do not reply to the sender. Sending a message needs an explicit request from the
 
 ## Review history
 
-Query `audit_log` by `collection` and `record` to see who changed a record and when. Each row has `action`, `actor` (agent ID, empty for a superuser), `actor_type`, `created`, and a `changes` JSON with the before and after values of the changed fields. For a deal's stage history, select rows where `json_extract(changes, '$.after.stage')` is not NULL, ordered by `created`; the first row is the deal's creation unless the deal existed before the log was added. Join stage IDs to `stages` for names. Filter by `actor` and `created` to list one agent's recent writes. Agent accounts are not SQL-readable, so ask the operator to map an unfamiliar actor ID to an agent. The log is append-only for agents; do not try to correct it.
+Query `audit_log` by `collection` and `record` to see who changed a record and when. Each row has `action`, `actor` (agent ID, empty for a superuser), `actor_type`, `created`, and a `changes` JSON with the before and after values of the changed fields. For a deal's stage history, select rows where `json_extract(changes, '$.after.stage')` is not NULL, ordered by `created`; the first row is the deal's creation unless the deal existed before the log was added. Join stage IDs to `stages` for names. Filter by `actor` and `created` to list one agent's recent writes. Use a `LEFT JOIN` from `audit_log.actor` to `agent_directory.id` for the current display name. A deleted account has no directory row; keep its actor ID in the result. The log is append-only for agents; do not try to correct it.
 
 ## Retry safely
 

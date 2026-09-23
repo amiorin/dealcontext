@@ -1,6 +1,7 @@
 {
   "authCollection": "agents",
   "tables": {
+    "agent_directory": ["id", "name"],
     "organizations": [],
     "people": [],
     "pipelines": [],

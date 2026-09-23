@@ -20,7 +20,7 @@ They must already be set in the environment your commands run in; do not set the
 Start a session with:
 
 ```sh
-python3 scripts/dc.py whoami   # your agent id (the value for every `owner` field), name, server URL
+python3 scripts/dc.py whoami   # your agent id (use it when assigning work to yourself), name, server URL
 python3 scripts/dc.py check    # exit 0: the reference files match the server; exit 3: differences are listed
 ```
 
@@ -41,7 +41,7 @@ Output is the server's JSON on stdout; add `--pretty` to indent it. Errors go to
 
 1. The workspace is shared. Every agent can read and change every CRM record. `owner` assigns work; it is not an access boundary. Do not tell the user that records are private.
 2. Read with SQL (`dc.py sql`, `dc.py schema`). SQL is read-only. Write only through `create`, `update`, and `batch`. Never edit the database, migrations, or server files to change records.
-3. Resolve record ids with SQL before you write. If a name matches several records, ask the user which one. Set `status`, `currency`, and `owner` explicitly on deals.
+3. Resolve record ids with SQL before you write. If a name matches several records, ask the user which one. Use `agent_directory` to resolve account names and IDs for ownership; names need not be unique. Set `status`, `currency`, and `owner` explicitly on deals.
 4. You cannot delete. A DELETE returns 403. Mark the mistake instead: close a deal as `lost` with a `lost_reason`, complete an activity and explain in its `description`, or correct a note. A mistaken message keeps its person link; correct its body or prefix it with `[RETRACTED <date>: <reason>]`. A note that is wrong as a whole keeps its link and gets a body that starts with `[RETRACTED <date>: <reason>]`. If a record must be removed, give the user the collection and record id and ask them to have the operator delete it.
 5. Do not send `created_by` or `updated_by`. The server sets them from your login, and every create and update is recorded in `audit_log` with your agent id.
 6. Do not send email, invitations, or other external messages unless the user explicitly asks. An `email` activity records work; it sends nothing. Creating an outgoing message records communication already sent; it does not send it.
@@ -62,7 +62,7 @@ You can change only `status`, `person`, and `deal` on an enquiry. Steps are in `
 
 ## Reading
 
-Select only the columns you need, always add `LIMIT`, and order the rows when you page. The server caps a result at 500 rows and 1 MB and a query at 2 seconds (`dc.py schema` prints the live `limits`): when the result has `"truncated": true` the client prints a `WARNING` line on stderr, and the rows are incomplete. Narrow the query or page with `ORDER BY ... LIMIT ... OFFSET ...`. Empty optional strings, dates, and relations are `''`, not NULL. Auth tables are not readable. Quote user text as a SQL literal by doubling single quotes. Count and sum in SQL instead of fetching rows to count them.
+Select only the columns you need, always add `LIMIT`, and order the rows when you page. The server caps a result at 500 rows and 1 MB and a query at 2 seconds (`dc.py schema` prints the live `limits`): when the result has `"truncated": true` the client prints a `WARNING` line on stderr, and the rows are incomplete. Narrow the query or page with `ORDER BY ... LIMIT ... OFFSET ...`. Empty optional strings, dates, and relations are `''`, not NULL. Auth tables are not readable. `agent_directory` provides only account `id` and display `name`; join it to `owner`, `created_by`, `updated_by`, or `audit_log.actor` to resolve names. It is read-only for agents. Quote user text as a SQL literal by doubling single quotes. Count and sum in SQL instead of fetching rows to count them.
 
 ## Writing
 
@@ -86,7 +86,7 @@ JSON
 
 ## References
 
-- `references/schema.md`: collections, fields, required values, server rules, automatic values, the `enquiries` table, `audit_log` format. Read it before your first write and before writing SQL joins.
+- `references/schema.md`: collections, fields, required values, server rules, automatic values, `agent_directory`, the `enquiries` table, `audit_log` format. Read it before your first write and before writing SQL joins.
 - `references/workflows.md`: steps for starting a pipeline, creating a deal, moving or closing a deal, follow-ups, messages, notes, triaging enquiries, history, and safe retries. Read the section for the task at hand.
 - `references/examples.md`: SQL queries (open deals without a follow-up, stage history, record history, new enquiries) and write examples as HTTP and as `dc.py` commands. Read it when you need a query or request to adapt.
 - `references/schema.json`: SQL tables and columns at the time this skill was published. `dc.py check` reads it; you rarely need to.

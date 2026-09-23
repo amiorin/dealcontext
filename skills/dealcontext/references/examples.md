@@ -4,7 +4,7 @@ Each example is shown as a `dc.py` command and as the HTTP request it sends. `dc
 
 ## Read
 
-Your agent ID, which is the value for `owner`:
+Your account ID, for assigning work to yourself:
 
 ```sh
 dc.py whoami
@@ -15,6 +15,32 @@ Read the schema:
 ```sh
 dc.py schema
 curl --fail-with-body "$BASE_URL/api/context/schema" -H "Authorization: $TOKEN"
+```
+
+List account IDs and display names:
+
+```sh
+dc.py sql 'SELECT id, name FROM agent_directory ORDER BY name, id LIMIT 100'
+```
+
+Find an owner by name before assigning work. Names are not unique; ask the user to choose if several IDs match:
+
+```sql
+SELECT id, name FROM agent_directory WHERE name = 'Sales agent' ORDER BY id LIMIT 100
+```
+
+Resolve a deal's owner and stamps without dropping deals that have empty stamps:
+
+```sql
+SELECT d.id, d.title, d.owner, o.name AS owner_name,
+       d.created_by, c.name AS created_by_name,
+       d.updated_by, u.name AS updated_by_name
+FROM deals d
+LEFT JOIN agent_directory o ON o.id = d.owner
+LEFT JOIN agent_directory c ON c.id = d.created_by
+LEFT JOIN agent_directory u ON u.id = d.updated_by
+ORDER BY d.updated DESC, d.id
+LIMIT 50
 ```
 
 Open deals without an upcoming activity:
@@ -36,12 +62,13 @@ ORDER BY d.updated DESC
 LIMIT 50
 ```
 
-Stage history of one deal from `audit_log`. A `create` row has a NULL `from_stage`. A deal that existed before the log was added starts with an `update` row. A stage name is NULL if the operator deleted that stage:
+Stage history of one deal from `audit_log`. A `create` row has a NULL `from_stage`. A deal that existed before the log was added starts with an `update` row. A stage name is NULL if the operator deleted that stage; `actor_name` is the current name or NULL for a deleted account or a superuser:
 
 ```sql
-SELECT a.created, a.action, a.actor, a.actor_type,
+SELECT a.created, a.action, a.actor, actor.name AS actor_name, a.actor_type,
        f.name AS from_stage, t.name AS to_stage
 FROM audit_log a
+LEFT JOIN agent_directory actor ON actor.id = a.actor
 LEFT JOIN stages f ON f.id = json_extract(a.changes, '$.before.stage')
 LEFT JOIN stages t ON t.id = json_extract(a.changes, '$.after.stage')
 WHERE a.collection = 'deals' AND a.record = '<deal-id>'

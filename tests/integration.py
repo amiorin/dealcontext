@@ -5,6 +5,7 @@ import contextlib
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -41,7 +42,43 @@ def main():
     binary = str(Path(args.binary).resolve())
     with tempfile.TemporaryDirectory(prefix='dealcontext-test-') as tmp:
         data = str(Path(tmp) / 'pb_data')
-        common = [binary, '--dir', data, '--migrationsDir', str(ROOT / 'pb_migrations'), '--hooksDir', str(ROOT / 'pb_hooks')]
+        migrations = Path(tmp) / 'pb_migrations'
+        shutil.copytree(ROOT / 'pb_migrations', migrations)
+        directory_migration, = migrations.glob('*_agent_directory.js')
+        fixture_version = int(directory_migration.name.split('_')[0]) - 1
+        # Seed an existing account before the directory migration. Omit runtime
+        # hooks to reproduce provisioning before directory support existed.
+        (migrations / f'{fixture_version}_legacy_agent_fixture.js').write_text('''
+migrate((app) => {
+  const agent = new Record(app.findCollectionByNameOrId("agents"));
+  agent.set("id", "legacyagent0001");
+  agent.set("name", "Existing agent");
+  agent.set("email", "legacy@example.com");
+  agent.setPassword("TestLegacyPassword123!");
+  app.unsafeWithoutHooks().save(agent);
+}, (app) => {
+  app.delete(app.findRecordById("agents", "legacyagent0001"));
+});
+''')
+        hooks = Path(tmp) / 'pb_hooks'
+        shutil.copytree(ROOT / 'pb_hooks', hooks)
+        # Force synchronization failures after the account write reaches its
+        # execute hook, so these checks prove both records share a transaction.
+        (hooks / 'directory_failure_fixture.pb.js').write_text('''
+onRecordCreateExecute((e) => {
+  if (e.record.id === "dirfailcreate01") throw new Error("Synthetic directory create failure");
+  e.next();
+}, "agent_directory");
+onRecordUpdateExecute((e) => {
+  if (e.record.getString("name") === "Reject directory sync") throw new Error("Synthetic directory update failure");
+  e.next();
+}, "agent_directory");
+onRecordDeleteExecute((e) => {
+  if (e.record.id === "dirfaildelete01") throw new Error("Synthetic directory delete failure");
+  e.next();
+}, "agent_directory");
+''')
+        common = [binary, '--dir', data, '--migrationsDir', str(migrations), '--hooksDir', str(hooks)]
         subprocess.run(common + ['superuser', 'upsert', 'test-admin@example.com', 'TestAdminPassword123!'], cwd=ROOT, check=True, capture_output=True)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -102,6 +139,58 @@ def main():
             def audit_count():
                 return sql('SELECT count(*) FROM audit_log')['rows'][0][0]
 
+            with item('agent directory backfills existing accounts and exposes only IDs and names'):
+                expected_names = {'legacyagent0001': 'Existing agent', agent['id']: 'Test agent', agent2['id']: 'Second agent'}
+                result = sql('SELECT * FROM agent_directory')
+                assert set(result['columns']) == {'id', 'name'}, result
+                assert {dict(zip(result['columns'], row))['id']: dict(zip(result['columns'], row))['name'] for row in result['rows']} == expected_names
+                for auth in (token, token2):
+                    listed = request('GET', many('agent_directory'), token=auth)
+                    assert listed['totalItems'] == 3, listed
+                    for entry in listed['items']:
+                        assert set(entry) == {'id', 'name', 'collectionId', 'collectionName'}, entry
+                        assert entry['name'] == expected_names[entry['id']], entry
+                    assert request('GET', one('agent_directory', agent2), token=auth)['name'] == 'Second agent'
+                for field in ('email', 'password', 'tokenKey', 'verified'):
+                    sql(f'SELECT {field} FROM agent_directory', expected=400)
+                sql('SELECT id, name FROM agents', expected=400)
+                request('GET', many('agents'), token=token, expected=403)
+                request('GET', one('agents', agent2), token=token, expected=404)
+            with item('agent directory remains private to authenticated agents and forbids agent writes'):
+                anonymous = request('GET', many('agent_directory'))
+                assert anonymous['items'] == [] and anonymous['totalItems'] == 0, anonymous
+                request('GET', one('agent_directory', agent), expected=404)
+                request('POST', '/api/context/query', {'sql': 'SELECT * FROM agent_directory'}, expected=401)
+                for auth in (None, token, token2):
+                    request('POST', many('agent_directory'), {'id': 'forgedagent0001', 'name': 'Forged'}, auth, expected=403)
+                    request('PATCH', one('agent_directory', agent2), {'name': 'Forged'}, auth, expected=403)
+                    request('DELETE', one('agent_directory', agent2), token=auth, expected=403)
+                assert sql(f"SELECT name FROM agent_directory WHERE id = '{agent2['id']}'")['rows'] == [['Second agent']]
+            with item('agent directory tracks renames and deletions without requiring unique names'):
+                disposable = request('POST', many('agents'), {'email': 'disposable@example.com', 'password': 'TestDisposablePassword123!', 'passwordConfirm': 'TestDisposablePassword123!', 'name': 'Second agent'}, admin)
+                assert sql(f"SELECT name FROM agent_directory WHERE id = '{disposable['id']}'")['rows'] == [['Second agent']]
+                request('PATCH', one('agents', disposable), {'name': 'Renamed agent'}, admin)
+                assert request('GET', one('agent_directory', disposable), token=token)['name'] == 'Renamed agent'
+                assert sql(f"SELECT name FROM agent_directory WHERE id = '{disposable['id']}'")['rows'] == [['Renamed agent']]
+                reject('PATCH', one('agents', disposable), {'name': ''}, ['name'], admin)
+                assert sql(f"SELECT name FROM agent_directory WHERE id = '{disposable['id']}'")['rows'] == [['Renamed agent']]
+                request('DELETE', one('agents', disposable), token=admin, expected=204)
+                request('GET', one('agent_directory', disposable), token=token, expected=404)
+                assert sql(f"SELECT id FROM agent_directory WHERE id = '{disposable['id']}'")['rows'] == []
+            with item('failed directory synchronization rolls back account create, rename, and delete'):
+                fixture = {'id': 'dirfailcreate01', 'email': 'sync-failure@example.com', 'password': 'TestSyncFailurePassword123!', 'passwordConfirm': 'TestSyncFailurePassword123!', 'name': 'Sync failure fixture'}
+                request('POST', many('agents'), fixture, admin, expected=400)
+                request('GET', one('agents', fixture), token=admin, expected=404)
+                request('GET', one('agent_directory', fixture), token=token, expected=404)
+                fixture['id'] = 'dirfaildelete01'
+                failing_agent = request('POST', many('agents'), fixture, admin)
+                request('PATCH', one('agents', failing_agent), {'name': 'Reject directory sync'}, admin, expected=400)
+                for collection, auth in (('agents', admin), ('agent_directory', token)):
+                    assert request('GET', one(collection, failing_agent), token=auth)['name'] == fixture['name']
+                request('DELETE', one('agents', failing_agent), token=admin, expected=400)
+                for collection, auth in (('agents', admin), ('agent_directory', token)):
+                    assert request('GET', one(collection, failing_agent), token=auth)['name'] == fixture['name']
+
             request('POST', '/api/collections/organizations/records', {'name': 'Forbidden', 'owner': agent['id']}, expected=400)
             request('POST', '/api/collections/agents/records', {'name': 'Forbidden'}, token, expected=403)
             org = create('organizations', {'name': 'Acme', 'owner': agent['id']})
@@ -147,6 +236,11 @@ def main():
             first = create('stages', {'name': 'Qualified', 'pipeline': pipeline['id'], 'position': 0})
             second = create('stages', {'name': 'Negotiation', 'pipeline': pipeline['id'], 'position': 1})
             deal = create('deals', {'title': 'Acme renewal', 'stage': first['id'], 'person': person['id'], 'organization': org['id'], 'owner': agent['id'], 'value_minor': 250000, 'currency': 'USD', 'status': 'open'})
+            with item('agent directory resolves another account owner and attribution stamps'):
+                joined = request('POST', '/api/context/query', {'sql': f"SELECT o.name AS owner, c.name AS creator, u.name AS updater FROM deals d LEFT JOIN agent_directory o ON o.id = d.owner LEFT JOIN agent_directory c ON c.id = d.created_by LEFT JOIN agent_directory u ON u.id = d.updated_by WHERE d.id = '{deal['id']}'"}, token2)
+                assert joined['rows'] == [['Test agent', 'Test agent', 'Test agent']], joined
+                request('DELETE', one('agents', agent), token=admin, expected=400)
+                assert request('GET', one('agent_directory', agent), token=token2)['name'] == 'Test agent'
             request('PATCH', f'/api/collections/deals/records/{deal["id"]}', {'stage': second['id']}, token)
             activity = create('activities', {'subject': 'Follow up', 'kind': 'call', 'deal': deal['id'], 'owner': agent['id'], 'due_at': '2030-01-01 09:00:00.000Z'})
             note = create('notes', {'body': 'Customer requested a renewal proposal.', 'deal': deal['id'], 'owner': agent['id'], 'source_url': 'https://example.com/evidence'})
@@ -456,6 +550,22 @@ def main():
                 request('GET', one(collection, {'id': record_id}), token=token, expected=404)
 
             batch_deal = {**new_deal, 'status': 'open'}
+            with item('agent directory synchronization rolls back with failed account batches'):
+                fixture = {'email': 'batch-agent@example.com', 'password': 'TestBatchAgentPassword123!', 'passwordConfirm': 'TestBatchAgentPassword123!', 'name': 'Batch agent', 'id': 'batchagent00001'}
+                batch_fails([post('agents', fixture), post('missing_collection', {})], 1, 404, auth=admin)
+                request('GET', one('agents', fixture), token=admin, expected=404)
+                absent('agent_directory', fixture['id'])
+                assert sql(f"SELECT id FROM agent_directory WHERE id = '{fixture['id']}'")['rows'] == []
+                [batch_agent] = batch([post('agents', fixture)], auth=admin)
+                assert sql(f"SELECT name FROM agent_directory WHERE id = '{batch_agent['id']}'")['rows'] == [['Batch agent']]
+                batch_fails([patch('agents', batch_agent, {'name': 'Rolled back name'}), post('missing_collection', {})], 1, 404, auth=admin)
+                assert request('GET', one('agents', batch_agent), token=admin)['name'] == 'Batch agent'
+                assert request('GET', one('agent_directory', batch_agent), token=token)['name'] == 'Batch agent'
+                batch_fails([{'method': 'DELETE', 'url': one('agents', batch_agent)}, post('missing_collection', {})], 1, 404, auth=admin)
+                assert request('GET', one('agents', batch_agent), token=admin)['name'] == 'Batch agent'
+                assert sql(f"SELECT name FROM agent_directory WHERE id = '{batch_agent['id']}'")['rows'] == [['Batch agent']]
+                request('DELETE', one('agents', batch_agent), token=admin, expected=204)
+                absent('agent_directory', batch_agent['id'])
             with item('C1 a batch returns 200 and one result per request in order; rules, auto-fill and created_by apply to each request'):
                 before = counts()
                 bodies = batch([post('deals', {**batch_deal, 'id': 'batchdeal000001', 'title': 'Batch deal'}),
@@ -591,6 +701,7 @@ def main():
                   'deal and activity lifecycle rules, server-filled closed_at and completed_at, reopening, ISO 4217 currency, linked notes, '
                   'person and organization consistency, superuser-only deletes, created_by and updated_by stamps, '
                   'append-only audit_log for create, update, and delete, SQL stage history, agents table excluded from SQL, '
+                  'agent directory backfill, private read access, owner joins, lifecycle synchronization and batch rollback, '
                   'invalid dates rejected, concurrent writes to one record, '
                   'batch API: ordered results, per-request rules, auto-fill, attribution and audit rows, atomic rollback, client-chosen ids, '
                   'two PATCHes of one record, 20 request limit, unauthenticated batch, agent DELETE in a batch, '

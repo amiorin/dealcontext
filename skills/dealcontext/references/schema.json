@@ -17,6 +17,10 @@
       {"name": "updated", "type": "TEXT"},
       {"name": "updated_by", "type": "TEXT"}
     ]},
+    {"name": "agent_directory", "columns": [
+      {"name": "id", "type": "TEXT"},
+      {"name": "name", "type": "TEXT"}
+    ]},
     {"name": "audit_log", "columns": [
       {"name": "action", "type": "TEXT"},
       {"name": "actor", "type": "TEXT"},

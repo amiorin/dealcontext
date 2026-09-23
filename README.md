@@ -80,7 +80,9 @@ This identifies agent traffic to proxies that reject Python's generic user-agent
 
 ## Data and permissions
 
-The eight CRM collections, `enquiries`, and `audit_log` are SQL-readable. Auth and internal tables are excluded. The operator-managed `enquiry_notification_recipients` collection is superuser-only through the records API and excluded from agent SQL. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
+The eight CRM collections, `enquiries`, `audit_log`, and `agent_directory` are SQL-readable. Auth and internal tables are excluded. The operator-managed `enquiry_notification_recipients` collection is superuser-only through the records API and excluded from agent SQL. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
+
+`agent_directory` exposes only account IDs and display names to authenticated agents through SQL and the records API. Its `id` matches the corresponding `agents` record. The migration backfills existing accounts, and server hooks synchronize account creation, name changes, and deletion. Agents cannot modify the directory, and anonymous callers cannot read it. Resolve owners, stamps, and audit actors with SQL joins; names need not be unique, so continue using IDs for assignment. The existing relations still target `agents`; directory access does not change native REST relation expansion or expose authentication fields.
 
 PocketBase validates fields and relations on writes. Server hooks in `pb_hooks/` add these rules to every validated save, from the records API and from the dashboard. A violation returns HTTP 400 with a message naming the field and the rule:
 
@@ -103,7 +105,7 @@ Every CRM record has `created_by` and `updated_by`. The server sets them from th
 
 Rules outside this list remain agent conventions documented in [workflows](skills/dealcontext/references/workflows.md). This version does not include tenant isolation, email sync, external message delivery, or currency conversion.
 
-`pocketcontext.json` sets SQL tables, query timeout, and result limits. Empty column arrays expose all columns of those configured tables. Review newly added fields before deploying migrations that could expose sensitive data.
+`pocketcontext.json` sets SQL tables, query timeout, and result limits. The directory explicitly allows only `id` and `name`; empty column arrays expose all columns of the other configured tables. Review newly added fields before deploying migrations that could expose sensitive data.
 
 See [schema](skills/dealcontext/references/schema.md), [workflows](skills/dealcontext/references/workflows.md), and [examples](skills/dealcontext/references/examples.md). Back up the data directory using PocketBase's supported backup procedure before upgrades. Review and test migration changes before applying them to a live CRM.
 
@@ -297,7 +299,7 @@ python3 tests/deploy.py --binary ../pocketcontext/bin/pocketcontext
 python3 tests/intake.py --binary ../pocketcontext/bin/pocketcontext
 ```
 
-The integration test creates a temporary database, provisions two agents, and exercises contact creation, stage changes, follow-ups, notes, deal closure, SQL joins, permissions, and field validation. It also checks each server rule above with a rejected and an accepted write, superuser-only deletes, `created_by` and `updated_by` stamping, the `audit_log` rows for creates, updates, and deletes, and the batch API. It deletes its temporary state when finished.
+The integration test creates a temporary database, provisions two agents, and exercises contact creation, stage changes, follow-ups, notes, deal closure, SQL joins, permissions, and field validation. It also checks directory synchronization and access controls, each server rule above with a rejected and an accepted write, superuser-only deletes, `created_by` and `updated_by` stamping, the `audit_log` rows for creates, updates, and deletes, and the batch API. It deletes its temporary state when finished.
 
 The deployment test starts a server with the variables of the deployment contract and checks `/up`, the settings taken from the environment, the trusted proxy header, the rate limits per forwarded client address, a later start without the variables, and the agent password rules of the security migration. The container image has its own checks, see [Deploy with ONCE](#deploy-with-once).
 

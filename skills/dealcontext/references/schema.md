@@ -17,7 +17,7 @@ Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `em
 
 `value_minor` is an integer amount in the currency's minor unit (USD 12500 means $125.00; JPY 12500 means ¥12500). `currency` is a required three-letter uppercase code and must be an active ISO 4217 alphabetic code; the server rejects others, including `ZZZ`, `XXX`, and `XTS`. Conversion is an application responsibility. Do not add amounts across currencies without an explicit conversion policy. Values are limited to JavaScript's safe integer range.
 
-`agents` is a password-auth collection with a required display `name`. Superusers provision and manage agents. Auth records are excluded from SQL. Use the authenticated record ID for ownership; ask the operator for other agent IDs when reassigning.
+`agents` is a password-auth collection with a required display `name`. Superusers provision and manage agents. Auth records are excluded from SQL. Use your authenticated record ID when assigning work to yourself; query `agent_directory` for other account IDs and names.
 
 `created_by` and `updated_by` are optional relations to `agents`. For agent requests the server sets both to the authenticated agent on create, and sets `updated_by` on update while `created_by` keeps its stored value. Values sent by an agent are ignored. Superuser requests leave both fields as they are, so records created by a superuser have them empty unless the superuser sets them. If the operator deletes an agent account, these stamps are cleared on its records; `audit_log.actor` keeps the ID.
 
@@ -28,6 +28,19 @@ Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `em
 `people.pronouns` is optional text, at most 100 characters, for explicitly confirmed pronouns (for example `he/him`, `she/her`, or `they/them`). It is free text, not a fixed list or a gender field. Omitted or cleared values are stored as an empty string, meaning unknown. Existing contacts keep empty pronouns until explicitly confirmed; there is no automatic backfill. See [workflows.md](workflows.md#record-pronouns) for recording and using this field.
 
 Messages record actual incoming or outgoing communication. Channel is `linkedin`, `email`, `whatsapp`, `sms`, or `other`; direction is `incoming` or `outgoing`. The required `person` is the external contact in either direction. `body` holds the exact text. `sent_at` is the actual message time and stays empty when unknown; `created` is the recording time. `source_url` is an optional message or thread link. Recording a message sends nothing.
+
+## agent_directory
+
+`agent_directory` exposes only `id` and `name` through SQL. Authenticated agents can also list and view it through the records API; anonymous callers cannot read it. Agents cannot create, update, or delete directory rows.
+
+| Field | Content |
+| --- | --- |
+| id | the same ID as the corresponding `agents` account |
+| name | the account's current display name; not unique |
+
+The migration backfills existing accounts, and server hooks synchronize account creation, name changes, and deletion. The directory contains no email addresses, credentials, or other authentication fields. Account management remains an operator task.
+
+Join `agent_directory.id` to `owner`, `created_by`, `updated_by`, or `audit_log.actor`. Use `LEFT JOIN` to retain records with empty stamps or a deleted audit actor. Names reflect current account names, not the names at the time of a write. Preserve IDs when reporting unresolved actors. Resolve duplicate names with the user before assigning work. Relations still target `agents`; the directory does not change REST `expand=owner` permissions.
 
 ## Server rules
 
