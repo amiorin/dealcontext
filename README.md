@@ -45,9 +45,28 @@ Then authenticate the agent at `POST /api/collections/agents/auth-with-password`
 
 Give the coding agent the skill described in the next section, the server URL, and the provisioned agent credentials. No MCP service is required.
 
+## Google Workspace login and account lifecycle
+
+Humans and coding agents share the existing `agents` auth collection. Existing IDs, owners, audit actors, password login, and the public enquiry endpoint are preserved.
+
+Create a separate Google OAuth Web application client for DealContext. Register `http://127.0.0.1:8765/callback` for the Python CLI. A browser UI using PocketBase's realtime OAuth flow uses `https://crm.pocketcontext.com/api/oauth2-redirect` instead. Set both `DEALCONTEXT_GOOGLE_CLIENT_ID` and `DEALCONTEXT_GOOGLE_CLIENT_SECRET` through the deployment environment; only one or credentials containing whitespace stop startup. When neither is set, stored provider settings remain unchanged. Configuration preserves other provider options and is applied on first installation and later starts.
+
+Set `DEALCONTEXT_GOOGLE_WORKSPACE_DOMAIN=pocketcontext.com` to enable JIT. The server requires Google-verified email, the exact trusted `hd` Workspace domain, and a matching email domain. Browser hints and client provisioning fields cannot grant access. An eligible first login creates an account with immediate shared CRM access. Existing case-insensitive email matches reuse their account ID; ambiguous matches fail. With the domain unset, existing provisioned accounts can use Google, but new accounts cannot self-register. Direct signup remains blocked in either mode.
+
+```sh
+export DEALCONTEXT_URL=https://crm.pocketcontext.com
+export DEALCONTEXT_AGENT_EMAIL=you@pocketcontext.com
+python3 skills/dealcontext/scripts/dc.py login --google
+python3 skills/dealcontext/scripts/dc.py whoami
+```
+
+For a headless SSH session, connect from the browser's computer with `ssh -L 8765:127.0.0.1:8765 user@ssh-host`, run the login there, and open the printed private URL locally. The CLI validates callback state and uses PKCE. It caches only the DealContext token, never provider tokens. Seven-day tokens renew during active CLI use, at most once per five minutes or near expiry; `whoami` always refreshes. After seven days without renewal, browser login is required again. The applications have separate accounts, tokens, and offboarding controls.
+
+An operator disables an account with `PATCH /api/collections/agents/records/<id>` and `{"disabled":true}` or the dashboard. Login, refresh, REST, SQL, batch, and realtime access are denied; the account's token key is rotated. Re-enabling requires a fresh login and never revives old tokens. Requests already executing when an account is disabled may finish. All account deletion is blocked, including operator deletion, to preserve attribution and assignments; ordinary CRM record deletion by operators is unchanged. Google Workspace suspension alone does not revoke an existing application token.
+
 ## Install the skill on another computer
 
-The computer that operates the CRM needs Python 3, the skill, and three environment variables. It does not need a clone of this repository. Install the skill with the [`skills` CLI](https://github.com/vercel-labs/skills), which needs Node.js:
+The computer that operates the CRM needs Python 3, the skill, a server URL, and an account email. Use Google login or an account password. It does not need a clone of this repository. Install the skill with the [`skills` CLI](https://github.com/vercel-labs/skills), which needs Node.js:
 
 ```sh
 npx skills add pocketcontext/dealcontext --list                                        # shows the skill found in skills/dealcontext
@@ -61,7 +80,7 @@ Set these variables in the environment that starts the coding agent:
 ```sh
 export DEALCONTEXT_URL=https://crm.example.com
 export DEALCONTEXT_AGENT_EMAIL=agent@example.com
-export DEALCONTEXT_AGENT_PASSWORD=...   # from a secret store, not from a committed file
+export DEALCONTEXT_AGENT_PASSWORD=...   # optional for password login; omit for Google
 ```
 
 Use an `https` URL for a server that is not on the same computer; the password and token travel in the requests. Do not place superuser credentials in the agent's environment. The skill needs only the agent account, tells the agent never to look for operator credentials, and the agent account cannot delete records, provision accounts, or change the schema.
@@ -75,7 +94,7 @@ python3 scripts/dc.py check    # exit 0: the skill's schema snapshot matches the
 
 `dc.py` uses only the Python standard library. It caches the login token in `$XDG_CACHE_HOME/dealcontext/` (default `~/.cache/dealcontext/`) with mode 0600, never prints the password or token, and has no delete command. `dc.py logout` removes the cached token and version metadata. When `check` reports differences, the server is newer or older than the installed skill: the live schema is authoritative, and updating the skill brings the reference files back in line.
 
-Remote commands automatically compare the installed skill revision with `GET /api/dealcontext/skill-version`, which requires an agent login and returns `{"recommendedRevision":1}`. If the server recommends a newer revision, the client warns on stderr with update instructions; normal command JSON and exit codes are unchanged. The assistant must relay that warning to the user. The client never installs updates or blocks operations because of a revision mismatch.
+Remote commands automatically compare the installed skill revision with `GET /api/dealcontext/skill-version`, which requires an agent login and returns `{"recommendedRevision":2}`. If the server recommends a newer revision, the client warns on stderr with update instructions; normal command JSON and exit codes are unchanged. The assistant must relay that warning to the user. The client never installs updates or blocks operations because of a revision mismatch.
 
 Version metadata is cached separately from the login token for five minutes, scoped to the server URL, account email, and installed skill revision. `dc.py check` always refreshes it and still compares the live schema with the snapshot. `newid` and `logout` make no requests. With an older server returning 404, commands continue silently and `dc.py check` still provides schema comparison. Other metadata failures produce a warning and the requested command continues.
 
@@ -88,7 +107,7 @@ This identifies agent traffic to proxies that reject Python's generic user-agent
 
 The eight CRM collections, `enquiries`, `audit_log`, and `agent_directory` are SQL-readable. Auth and internal tables are excluded. The operator-managed `enquiry_notification_recipients` collection is superuser-only through the records API and excluded from agent SQL. Every authenticated `agents` account can read, create, and update all CRM records; `enquiries` has narrower rules, see [Public enquiry form](#public-enquiry-form). The `owner` relation assigns work; it does not restrict visibility.
 
-`agent_directory` exposes only account IDs and display names to authenticated agents through SQL and the records API. Its `id` matches the corresponding `agents` record. The migration backfills existing accounts, and server hooks synchronize account creation, name changes, and deletion. Agents cannot modify the directory, and anonymous callers cannot read it. Resolve owners, stamps, and audit actors with SQL joins; names need not be unique, so continue using IDs for assignment. The existing relations still target `agents`; directory access does not change native REST relation expansion or expose authentication fields.
+`agent_directory` exposes only account IDs and display names to authenticated agents through SQL and the records API. Its `id` matches the corresponding `agents` record. The migration backfills existing accounts, and server hooks synchronize account creation and name changes. Disabled accounts remain in the directory; account deletion is blocked. Agents cannot modify the directory, and anonymous callers cannot read it. Resolve owners, stamps, and audit actors with SQL joins; names need not be unique, so continue using IDs for assignment. The existing relations still target `agents`; directory access does not change native REST relation expansion or expose authentication fields.
 
 PocketBase validates fields and relations on writes. Server hooks in `pb_hooks/` add these rules to every validated save, from the records API and from the dashboard. A violation returns HTTP 400 with a message naming the field and the rule:
 
@@ -205,6 +224,8 @@ ONCE injects `BASE_URL`, `SMTP_ADDRESS`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PAS
 | Variable | Meaning |
 | --- | --- |
 | `DEALCONTEXT_SUPERUSER_EMAIL`, `DEALCONTEXT_SUPERUSER_PASSWORD` | The entrypoint runs `superuser upsert` on every start when both are set. One without the other is a startup error. |
+| `DEALCONTEXT_GOOGLE_CLIENT_ID`, `DEALCONTEXT_GOOGLE_CLIENT_SECRET` | Optional pair enabling Google OAuth on `agents`; both must be supplied together. |
+| `DEALCONTEXT_GOOGLE_WORKSPACE_DOMAIN` | Optional lowercase DNS domain enabling verified Workspace JIT, e.g. `pocketcontext.com`. Absent: only existing accounts may log in. |
 | `DEALCONTEXT_TRUSTED_PROXY_HEADER` | Header that holds the client address, see below. Unset: the stored setting is left alone. |
 | `DEALCONTEXT_RATE_LIMITS` | `true` enables the rate limits, `false` disables them. The image sets `true`. |
 | `DEALCONTEXT_INTAKE_ORIGINS` | Comma-separated browser origins that may post the [public enquiry form](#public-enquiry-form), for example `https://pocketcontext.com`. Added to `BASE_URL` in the CORS origins. Unset: only `BASE_URL`. |
@@ -230,6 +251,9 @@ once:
         DEALCONTEXT_SUPERUSER_EMAIL: app-dealcontext-superuser-email
         DEALCONTEXT_SUPERUSER_PASSWORD: app-dealcontext-superuser-password
         DEALCONTEXT_TRUSTED_PROXY_HEADER: app-dealcontext-trusted-proxy-header
+        DEALCONTEXT_GOOGLE_CLIENT_ID: app-dealcontext-google-client-id
+        DEALCONTEXT_GOOGLE_CLIENT_SECRET: app-dealcontext-google-client-secret
+        DEALCONTEXT_GOOGLE_WORKSPACE_DOMAIN: app-dealcontext-google-workspace-domain
         LITESTREAM_BUCKET: app-dealcontext-litestream-bucket
         LITESTREAM_PATH: app-dealcontext-litestream-path
         LITESTREAM_REGION: app-dealcontext-litestream-region
@@ -305,6 +329,11 @@ python3 tests/integration.py --binary ../pocketcontext/bin/pocketcontext
 python3 tests/skill.py --binary ../pocketcontext/bin/pocketcontext
 python3 tests/deploy.py --binary ../pocketcontext/bin/pocketcontext
 python3 tests/intake.py --binary ../pocketcontext/bin/pocketcontext
+python3 tests/oauth.py
+python3 tests/oauth_config.py --binary ../pocketcontext/bin/pocketcontext
+python3 tests/oauth_integration.py --binary ../pocketcontext/bin/pocketcontext
+python3 tests/account_access.py --binary ../pocketcontext/bin/pocketcontext
+python3 tests/realtime_access.py --binary ../pocketcontext/bin/pocketcontext
 ```
 
 The integration test creates a temporary database, provisions two agents, and exercises contact creation, stage changes, follow-ups, notes, deal closure, SQL joins, permissions, and field validation. It also checks directory synchronization and access controls, each server rule above with a rejected and an accepted write, superuser-only deletes, `created_by` and `updated_by` stamping, the `audit_log` rows for creates, updates, and deletes, and the batch API. It deletes its temporary state when finished.

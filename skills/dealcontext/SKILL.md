@@ -1,6 +1,6 @@
 ---
 name: dealcontext
-description: Operate DealContext CRM through its HTTP API with the bundled dc.py client. Use for deals, pipelines, stages, contacts, organizations, follow-up activities, messages, notes, web enquiries, and audit history. Create or update records, record incoming or outgoing messages, schedule follow-ups, close deals, triage enquiries, and review the pipeline. Needs DEALCONTEXT_URL, DEALCONTEXT_AGENT_EMAIL, and DEALCONTEXT_AGENT_PASSWORD in the environment.
+description: Operate DealContext CRM through its HTTP API with the bundled dc.py client. Use for deals, pipelines, stages, contacts, organizations, follow-up activities, messages, notes, web enquiries, and audit history. Create or update records, record incoming or outgoing messages, schedule follow-ups, close deals, triage enquiries, and review the pipeline. Uses DEALCONTEXT_URL and DEALCONTEXT_AGENT_EMAIL, with Google login or an account password.
 ---
 
 # DealContext
@@ -9,13 +9,13 @@ DealContext is a shared sales CRM on a PocketBase server. It has no user interfa
 
 ## Configuration
 
-The client reads three environment variables:
+The client reads these environment variables:
 
 - `DEALCONTEXT_URL`: server address, for example `https://crm.example.com`
 - `DEALCONTEXT_AGENT_EMAIL`: email of your account in the `agents` collection
-- `DEALCONTEXT_AGENT_PASSWORD`: its password
+- `DEALCONTEXT_AGENT_PASSWORD`: optional password for password authentication
 
-They must already be set in the environment your commands run in; do not set them inline in a command. If one is missing, the client exits with code 2 and names it. Stop and tell the user which variable to set. Do not search files for credentials. Never ask for, look for, or use superuser (operator) credentials; CRM work needs only the agent account. Never put the password or a token in a command line, a file, or your reply. The client logs in when needed and caches the token in `~/.cache/dealcontext/` with mode 0600.
+The URL and email must already be set in the environment your commands run in; do not set them inline in a command. If one is missing, the client exits with code 2 and names it. Stop and tell the user which variable to set. Do not search files for credentials. Never ask for, look for, or use superuser (operator) credentials; CRM work needs only the agent account. Never put the password or a token in a command line, a file, or your reply. For Google authentication, run `python3 scripts/dc.py login --google` and let the user complete browser sign-in. Never open the authorization URL on their behalf. Workspace JIT may create the account on first login; disabled accounts require an operator to restore access. For an SSH session, see `references/workflows.md`, "Google sign-in". The client logs in when needed and caches the token in `~/.cache/dealcontext/` with mode 0600.
 
 Start a session with:
 
@@ -27,6 +27,7 @@ python3 scripts/dc.py check    # exit 0: the reference files match the server; e
 ## Commands
 
 ```text
+dc.py login --google [--port 8765] [--timeout 180]
 dc.py whoami | check | schema | newid | logout
 dc.py sql '<SELECT ...>'                     or: dc.py sql -        (query on standard input)
 dc.py get <collection> <id>
@@ -82,7 +83,7 @@ JSON
 - Exit code 4 (HTTP 409): another request changed the record first. Read the record again, confirm your change still applies, then retry.
 - Timeout or transport error on a write: the write may have been saved. Read the current state before retrying, or you create a duplicate that you cannot delete.
 - HTTP 403 on a write: agents cannot delete or provision accounts. Do not look for another way around it.
-- A login failure means the variables are wrong. Tell the user; do not try other credentials.
+- A login failure can mean incorrect credentials, an expired Google session, a disabled account, or a Workspace eligibility failure. Tell the user; do not try other credentials. If requested by the client, have the user run `dc.py login --google` again.
 
 ## References
 

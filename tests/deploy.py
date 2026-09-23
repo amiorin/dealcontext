@@ -210,10 +210,10 @@ def main():
 
             with item('D3 agents collection options'):
                 collection = request('GET', '/api/collections/agents', token=admin)
-                assert collection['authToken']['duration'] == 86400, collection['authToken']
+                assert collection['authToken']['duration'] == 604800, collection['authToken']
                 assert collection['authAlert']['enabled'] is False, collection['authAlert']
                 claims = json.loads(base64.urlsafe_b64decode(token1.split('.')[1] + '=='))
-                assert abs(claims['exp'] - time.time() - 86400) < 300, claims['exp']
+                assert abs(claims['exp'] - time.time() - 604800) < 300, claims['exp']
             with item('D3 an agent changes only its own password, and only with oldPassword'):
                 new = 'ChangedAgentPassword1!'
                 change = {'password': new, 'passwordConfirm': new}
@@ -227,7 +227,7 @@ def main():
                     request('PATCH', own, {**change, 'oldPassword': password1, field: value}, token1, expected=404, ip='198.51.100.3')
                     request('PATCH', own, {field: value}, token1, expected=404, ip='198.51.100.3')
                 request('DELETE', own, token=token1, expected=403, ip='198.51.100.3')
-                request('POST', '/api/collections/agents/records', {'email': 'self@example.test', 'password': new, 'passwordConfirm': new, 'name': 'Self'}, token1, expected=403, ip='198.51.100.3')
+                request('POST', '/api/collections/agents/records', {'email': 'self@example.test', 'password': new, 'passwordConfirm': new, 'name': 'Self'}, token1, expected=400, ip='198.51.100.3')
                 stored = request('GET', own, token=admin)
                 assert (stored['email'], stored['name'], stored['verified'], stored['emailVisibility']) == (email1, 'Agent 1', False, False), stored
                 assert request('GET', own, token=token1, ip='198.51.100.3')['id'] == first['id']
@@ -333,7 +333,7 @@ def main():
             mailbox.server_close()
     print('PASS: /up health check, settings from the environment, SMTP credentials in use, idempotent and group-wise apply, '
           'stored settings kept without variables, trusted proxy header, rate limit rules per client IP, /up never limited or logged, '
-          'agent self password change, token invalidation, one-day agent tokens, no secrets in output')
+          'agent self password change, token invalidation, seven-day account tokens, no secrets in output')
 
 
 if __name__ == '__main__':

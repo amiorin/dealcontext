@@ -253,7 +253,9 @@ def once_env(extra=None):
 
 def smoke(image, tmp, run_id):
     name, volume = f'dc-smoke-{run_id}', f'dc-smoke-{run_id}'
-    env = once_env({'LITESTREAM_DISABLED': 'true'})
+    env = once_env({'LITESTREAM_DISABLED': 'true', 'DEALCONTEXT_GOOGLE_CLIENT_ID': 'synthetic-google-client',
+                    'DEALCONTEXT_GOOGLE_CLIENT_SECRET': secret(secrets.token_urlsafe(24)),
+                    'DEALCONTEXT_GOOGLE_WORKSPACE_DOMAIN': 'example.test'})
     agent_email, agent_password = 'agent@example.test', secret(secrets.token_urlsafe(24))
 
     step('starting the image with the ONCE variables, LITESTREAM_DISABLED=true, a superuser, and a volume at /storage')
@@ -269,6 +271,13 @@ def smoke(image, tmp, run_id):
     check(settings['smtp']['enabled'] is True and settings['smtp']['host'] == env['SMTP_ADDRESS'], 'SMTP is enabled with SMTP_ADDRESS as host')
     check(settings['rateLimits']['enabled'] is True, "rate limits are enabled by the image's default DEALCONTEXT_RATE_LIMITS=true")
     check(env['SMTP_PASSWORD'] not in json.dumps(settings), 'the settings API does not return the SMTP password')
+
+    status, _, collection = http('GET', base + '/api/collections/agents', token=token)
+    check(status == 200 and collection['oauth2']['enabled'], 'Google OAuth enabled on first install')
+    check(collection['authToken']['duration'] == 604800 and collection['authRule'] == 'disabled = false', 'seven-day sessions and disabled-account authentication rule')
+    check(collection['createRule'] == "@request.context = 'oauth2'", 'account creation limited to internally validated OAuth')
+    check(any(p['name'] == 'google' and p['clientId'] == env['DEALCONTEXT_GOOGLE_CLIENT_ID'] for p in collection['oauth2']['providers']), 'Google client configured')
+    check(env['DEALCONTEXT_GOOGLE_CLIENT_SECRET'] not in json.dumps(collection), 'provider secret is not exposed')
 
     step('CORS: only BASE_URL is an allowed origin')
     _, reply, _ = http('GET', base + '/api/health', headers={'Origin': env['BASE_URL']})
@@ -315,6 +324,7 @@ def expect_startup_error(image, title, env, named, not_named=()):
 
 
 def config(image, tmp, run_id):
+    expect_startup_error(image, 'Google client without its secret', {'LITESTREAM_DISABLED': 'true', 'DEALCONTEXT_GOOGLE_CLIENT_ID': 'synthetic-google-client'}, ['DEALCONTEXT_GOOGLE_CLIENT_SECRET'])
     required = ['LITESTREAM_BUCKET', 'LITESTREAM_PATH', 'LITESTREAM_ACCESS_KEY_ID', 'LITESTREAM_SECRET_ACCESS_KEY']
     expect_startup_error(image, 'no variables at all: replication is required unless it is switched off', {}, required)
     expect_startup_error(image, 'only the secret key is missing',

@@ -72,6 +72,12 @@ fi
 cd "$APP_DIR"
 mkdir -p "$DATA_DIR"
 
+# Fail before restore or maintenance if only half the Google credential pair is set.
+if [ -n "${DEALCONTEXT_GOOGLE_CLIENT_ID:-}" ] || [ -n "${DEALCONTEXT_GOOGLE_CLIENT_SECRET:-}" ]; then
+	[ -n "${DEALCONTEXT_GOOGLE_CLIENT_ID:-}" ] && [ -n "${DEALCONTEXT_GOOGLE_CLIENT_SECRET:-}" ] ||
+		die "DEALCONTEXT_GOOGLE_CLIENT_ID and DEALCONTEXT_GOOGLE_CLIENT_SECRET must be set together"
+fi
+
 replicate=true
 if [ "${LITESTREAM_DISABLED:-}" = true ]; then
 	replicate=false

@@ -17,9 +17,9 @@ Deal status is `open`, `won`, or `lost`. Activity kind is `call`, `meeting`, `em
 
 `value_minor` is an integer amount in the currency's minor unit (USD 12500 means $125.00; JPY 12500 means ¥12500). `currency` is a required three-letter uppercase code and must be an active ISO 4217 alphabetic code; the server rejects others, including `ZZZ`, `XXX`, and `XTS`. Conversion is an application responsibility. Do not add amounts across currencies without an explicit conversion policy. Values are limited to JavaScript's safe integer range.
 
-`agents` is a password-auth collection with a required display `name`. Superusers provision and manage agents. Auth records are excluded from SQL. Use your authenticated record ID when assigning work to yourself; query `agent_directory` for other account IDs and names.
+`agents` is the shared human and agent auth collection with a required display `name`. It supports password login and Google Workspace OAuth. Eligible verified Workspace identities can be created on first login when JIT is enabled; operators manage existing accounts. Auth records are excluded from SQL. Use your authenticated record ID when assigning work to yourself; query `agent_directory` for other account IDs and names.
 
-`created_by` and `updated_by` are optional relations to `agents`. For agent requests the server sets both to the authenticated agent on create, and sets `updated_by` on update while `created_by` keeps its stored value. Values sent by an agent are ignored. Superuser requests leave both fields as they are, so records created by a superuser have them empty unless the superuser sets them. If the operator deletes an agent account, these stamps are cleared on its records; `audit_log.actor` keeps the ID.
+`created_by` and `updated_by` are optional relations to `agents`. For agent requests the server sets both to the authenticated agent on create, and sets `updated_by` on update while `created_by` keeps its stored value. Values sent by an agent are ignored. Superuser requests leave both fields as they are, so records created by a superuser have them empty unless the superuser sets them. Accounts cannot be deleted. Operators disable them to revoke access while preserving these stamps and `audit_log.actor`.
 
 `people.linkedin_url` is an optional URL for the person's LinkedIn profile. It uses standard URL validation, with no domain restriction. Omitted or cleared values are stored as an empty string.
 
@@ -38,9 +38,9 @@ Messages record actual incoming or outgoing communication. Channel is `linkedin`
 | id | the same ID as the corresponding `agents` account |
 | name | the account's current display name; not unique |
 
-The migration backfills existing accounts, and server hooks synchronize account creation, name changes, and deletion. The directory contains no email addresses, credentials, or other authentication fields. Account management remains an operator task.
+The migration backfills existing accounts, and server hooks synchronize account creation and name changes. Disabled accounts remain present; account deletion is blocked. The directory contains no email addresses, credentials, or other authentication fields. Account management remains an operator task.
 
-Join `agent_directory.id` to `owner`, `created_by`, `updated_by`, or `audit_log.actor`. Use `LEFT JOIN` to retain records with empty stamps or a deleted audit actor. Names reflect current account names, not the names at the time of a write. Preserve IDs when reporting unresolved actors. Resolve duplicate names with the user before assigning work. Relations still target `agents`; the directory does not change REST `expand=owner` permissions.
+Join `agent_directory.id` to `owner`, `created_by`, `updated_by`, or `audit_log.actor`. Use `LEFT JOIN` to retain records with empty stamps or a historical missing audit actor. Names reflect current account names, not the names at the time of a write. Preserve IDs when reporting unresolved actors. Resolve duplicate names with the user before assigning work. Relations still target `agents`; the directory does not change REST `expand=owner` permissions.
 
 ## Server rules
 
@@ -113,6 +113,6 @@ Deletes are superuser-only on all eight CRM collections and on `enquiries`; an a
 - update: `{"before": {...}, "after": {...}}` with only the fields whose value changed. `updated` and `updated_by` are never listed. An update that changes nothing writes no row.
 - delete: `{"before": {...}}` with the full record (for `enquiries` only its `status`).
 
-A rejected write leaves no row. The log does not cover everything: when the operator deletes a record, PocketBase clears optional relations that pointed to it (and `created_by`/`updated_by` when an agent account is deleted) without an `audit_log` row, and records that existed before the log was added have no `create` row. Rows are ordered by `created`, which has millisecond resolution, so two writes in the same millisecond have no defined order. A `delete` row keeps the deleted record's full contents readable to every agent, except for `enquiries`. Read values with `json_extract`, for example `json_extract(changes, '$.after.stage')`. Indexes cover (`collection`, `record`, `created`) and (`actor`, `created`).
+A rejected write leaves no row. The log does not cover everything: when the operator deletes a record, PocketBase clears optional relations that pointed to it without an `audit_log` row, and records that existed before the log was added have no `create` row. Rows are ordered by `created`, which has millisecond resolution, so two writes in the same millisecond have no defined order. A `delete` row keeps the deleted record's full contents readable to every agent, except for `enquiries`. Read values with `json_extract`, for example `json_extract(changes, '$.after.stage')`. Indexes cover (`collection`, `record`, `created`) and (`actor`, `created`).
 
 Discover actual columns using `/api/context/schema` (`dc.py schema`). The server's migrations are the source of truth. `references/schema.json` lists the SQL tables and columns at the time this skill was published, and `dc.py check` compares it with the server. All authenticated agents share access; there is no tenant isolation or row-level SQL policy.

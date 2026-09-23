@@ -58,10 +58,26 @@ Do not reply to the sender. Sending a message needs an explicit request from the
 
 ## Review history
 
-Query `audit_log` by `collection` and `record` to see who changed a record and when. Each row has `action`, `actor` (agent ID, empty for a superuser), `actor_type`, `created`, and a `changes` JSON with the before and after values of the changed fields. For a deal's stage history, select rows where `json_extract(changes, '$.after.stage')` is not NULL, ordered by `created`; the first row is the deal's creation unless the deal existed before the log was added. Join stage IDs to `stages` for names. Filter by `actor` and `created` to list one agent's recent writes. Use a `LEFT JOIN` from `audit_log.actor` to `agent_directory.id` for the current display name. A deleted account has no directory row; keep its actor ID in the result. The log is append-only for agents; do not try to correct it.
+Query `audit_log` by `collection` and `record` to see who changed a record and when. Each row has `action`, `actor` (agent ID, empty for a superuser), `actor_type`, `created`, and a `changes` JSON with the before and after values of the changed fields. For a deal's stage history, select rows where `json_extract(changes, '$.after.stage')` is not NULL, ordered by `created`; the first row is the deal's creation unless the deal existed before the log was added. Join stage IDs to `stages` for names. Filter by `actor` and `created` to list one agent's recent writes. Use a `LEFT JOIN` from `audit_log.actor` to `agent_directory.id` for the current display name. Accounts disabled now retain their directory row. Historical deleted accounts may have no row; keep the actor ID in the result. The log is append-only for agents; do not try to correct it.
 
 ## Retry safely
 
 Read current state after a timeout before retrying writes: the write may have been saved. A client-chosen id makes this check exact, because `get` on that id shows whether the record exists, and a repeated create with the same id is rejected instead of making a duplicate. On HTTP 409 (`dc.py` exit code 4) another request changed the record first: read it again, confirm your change still applies, and retry.
 
 A batch is atomic, so a failed batch saved nothing and can be sent again after the fix. Several requests outside a batch are not one transaction and can partially succeed. If a deal was created but its activity failed, keep the deal and retry only the missing activity. Tell the user about partial results. Agents cannot delete, so a duplicate created by a blind retry stays until the operator deletes it. Report the duplicate's collection and record ID to the user, and until it is removed mark it so it is not mistaken for live work, for example close a duplicate deal as `lost` with `lost_reason` "duplicate" or complete a duplicate activity.
+
+## Google sign-in
+
+Set `DEALCONTEXT_URL` and `DEALCONTEXT_AGENT_EMAIL` in the calling environment. A password is unnecessary after Google sign-in. Use Python 3; the client uses only the standard library.
+
+```sh
+python3 scripts/dc.py login --google
+python3 scripts/dc.py whoami
+python3 scripts/dc.py check
+```
+
+The user opens the printed private Google URL in their browser. When running the client over SSH, establish `ssh -L 8765:127.0.0.1:8765 user@ssh-host` from the browser's computer first, then run the client in that session. The callback listens only on the SSH host's loopback interface. Google must have `http://127.0.0.1:8765/callback` registered. A different `--port` needs a matching registered URI and forwarding rule.
+
+Workspace JIT creates an eligible account on first login and immediately grants shared CRM access. Existing accounts retain their IDs and attribution. Accounts outside the configured Google Workspace and disabled accounts cannot log in; ask the operator to resolve access instead of trying another identity.
+
+The client stores only the DealContext token, never Google's access or refresh tokens, in `$XDG_CACHE_HOME/dealcontext/` (default `~/.cache/dealcontext/`) with mode 0600. Tokens expire seven days after issue. Active Google sessions renew at most every five minutes or near expiry; `whoami` always renews. After seven days without renewal, repeat browser login. `logout` removes the local cache; an operator disables the account to revoke server access. Workspace suspension alone does not invalidate an already-issued DealContext token.

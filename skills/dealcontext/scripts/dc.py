@@ -4,14 +4,16 @@
 Configuration comes from three environment variables:
   DEALCONTEXT_URL             server address, for example https://crm.example.com
   DEALCONTEXT_AGENT_EMAIL     email of an account in the `agents` collection
-  DEALCONTEXT_AGENT_PASSWORD  password of that account
+  DEALCONTEXT_AGENT_PASSWORD  optional password; Google sessions use login --google
 
 Exit codes: 0 success; 1 HTTP or transport error; 2 usage or configuration error;
 3 `check` found schema differences; 4 HTTP 409 (read the record again, then retry).
 """
 import argparse
+import base64
 import hashlib
 import http.client
+import http.server
 import json
 import os
 from pathlib import Path
@@ -30,7 +32,7 @@ ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
 TIMEOUT = 30
 USER_AGENT = 'DealContext/1.0'
 # Bump with the server recommendation when installed skill behavior or guidance changes.
-SKILL_REVISION = 1
+SKILL_REVISION = 2
 SKILL_CHECK_TTL = 300
 SKILL_VERSION_PATH = '/api/dealcontext/skill-version'
 hidden = []  # The password and tokens. say() masks them in everything it prints.
@@ -60,11 +62,17 @@ def dump(data, pretty=False):
     return json.dumps(data, separators=(',', ':'), ensure_ascii=False)
 
 
-def config(names=ENV):
+def config(names=ENV[:2]):
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise Fail(2, 'missing environment variable: ' + ', '.join(missing) + '. Ask the user to set every missing variable; do not look for credentials elsewhere.')
-    return {'url': os.environ[ENV[0]].rstrip('/'), 'email': os.environ[ENV[1]], 'password': hide(os.environ.get(ENV[2]))}
+    url = os.environ[ENV[0]].rstrip('/')
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise Fail(2, 'DEALCONTEXT_URL must be an HTTP(S) URL without credentials, query, or fragment')
+    if parsed.scheme == 'http' and parsed.hostname not in ('localhost', '127.0.0.1', '::1'):
+        raise Fail(2, 'Use HTTPS for a remote DealContext server')
+    return {'url': url, 'email': os.environ[ENV[1]], 'password': hide(os.environ.get(ENV[2]))}
 
 
 # Token cache: one file per server URL and email, readable only by the current user.
@@ -78,7 +86,9 @@ def cache_file(cfg):
 def load_session(cfg):
     try:
         session = json.loads(cache_file(cfg).read_text())
-        return session if hide(session['token']) else None
+        if not isinstance(session, dict) or session.get('url') != cfg['url'] or session.get('email') != cfg['email']:
+            return None
+        return session if isinstance(session.get('token'), str) and hide(session['token']) else None
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -88,12 +98,13 @@ def save_session(cfg, session):
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(path.parent, 0o700)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w') as handle:
-            os.fchmod(fd, 0o600)
+        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.session-', delete=False) as handle:
+            temporary = Path(handle.name)
+            os.fchmod(handle.fileno(), 0o600)
             json.dump(session, handle)
+        os.replace(temporary, path)
     except OSError as error:
-        say(f'note: token not cached ({error.strerror}); the next command logs in again')
+        say(f'note: token not cached ({error.strerror}); sign-in will be required again')
 
 
 # HTTP
@@ -132,12 +143,136 @@ def send(cfg, method, path, body=None, token=None, timeout=TIMEOUT):
 
 
 def login(cfg):
+    if not cfg.get('password'):
+        raise Fail(2, 'Set DEALCONTEXT_AGENT_PASSWORD for password login, or run dc.py login --google for browser sign-in.')
     status, data = send(cfg, 'POST', '/api/collections/agents/auth-with-password', {'identity': cfg['email'], 'password': cfg['password']})
     if status != 200 or not isinstance(data, dict) or 'token' not in data:
-        raise Fail(1, f'login as {cfg["email"]} failed: HTTP {status}\n{dump(data)}\nCheck the three DEALCONTEXT_ variables with the user. Agent credentials only.')
+        raise Fail(1, f'login as {cfg["email"]} failed: HTTP {status}\n{dump(data)}\nCheck the three DEALCONTEXT_ variables with the user. User credentials only.')
     session = {'url': cfg['url'], 'email': cfg['email'], 'token': hide(data['token'])}
     save_session(cfg, session)
     return session
+
+
+def auth_session(cfg, data, method):
+    """Accept only the expected agents identity; never retain provider metadata."""
+    token = data.get('token') if isinstance(data, dict) else None
+    if isinstance(token, str):
+        hide(token)
+    record = data.get('record') if isinstance(data, dict) else None
+    if (not isinstance(token, str) or not token or not isinstance(record, dict) or record.get('collectionName') != 'agents'
+            or not record.get('id') or not isinstance(record.get('email'), str)
+            or record['email'].casefold() != cfg['email'].casefold()):
+        raise Fail(1, 'Authentication returned an unexpected identity; no session saved. Check DEALCONTEXT_AGENT_EMAIL.')
+    session = {'url': cfg['url'], 'email': cfg['email'], 'token': token, 'method': method, 'refreshed_at': time.time()}
+    save_session(cfg, session)
+    return session
+
+
+def oauth_send(cfg, method, path, body=None, token=None):
+    try:
+        return send(cfg, method, path, body, token)
+    except Fail:
+        # Redirect locations and transport errors may contain authorization credentials.
+        raise Fail(1, 'OAuth authentication request failed; check the server URL and connection, then retry.') from None
+
+
+def oauth_refresh_needed(session):
+    """Unverified JWT claims only schedule renewal; the server always authenticates the token."""
+    try:
+        payload = session['token'].split('.')[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+        now = time.time()
+        refreshed_at = session['refreshed_at']
+        return (not 0 <= now - refreshed_at < 300 or claims['exp'] <= now + 60)
+    except (ValueError, TypeError, KeyError, IndexError):
+        return True
+
+
+def google_login(cfg, port=8765, timeout=180):
+    if not 1 <= port <= 65535 or not 1 <= timeout <= 600:
+        raise Fail(2, 'OAuth port must be 1–65535 and timeout must be 1–600 seconds')
+    status, data = oauth_send(cfg, 'GET', '/api/collections/agents/auth-methods')
+    oauth = data.get('oauth2', {}) if isinstance(data, dict) else {}
+    providers = oauth.get('providers', [])
+    provider = next((p for p in providers if isinstance(p, dict) and p.get('name') == 'google'), None)
+    if status != 200 or not oauth.get('enabled') or not provider:
+        raise Fail(1, 'Google OAuth is not enabled on this DealContext server.')
+    auth_url = urllib.parse.urlsplit(provider.get('authURL', ''))
+    if auth_url.scheme != 'https' or auth_url.hostname != 'accounts.google.com' or auth_url.username or auth_url.password or auth_url.fragment:
+        raise Fail(1, 'Server returned an unexpected Google authorization URL.')
+    state = secrets.token_urlsafe(32)
+    verifier = hide(secrets.token_urlsafe(48))
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    redirect = f'http://127.0.0.1:{port}/callback'
+    metadata = urllib.parse.parse_qs(auth_url.query)
+    client_ids = metadata.get('client_id', [])
+    if len(client_ids) != 1 or not client_ids[0]:
+        raise Fail(1, 'Server returned an invalid Google client ID.')
+    params = {'client_id': client_ids[0]}
+    params.update(state=state, code_challenge=challenge, code_challenge_method='S256', redirect_uri=redirect,
+                  login_hint=cfg['email'], response_type='code', scope='openid email profile', access_type='online')
+    url = urllib.parse.urlunsplit(auth_url._replace(query=urllib.parse.urlencode(params)))
+    outcome = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass  # Callback URLs contain credentials.
+
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            values = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            code = values.get('code', [])
+            valid_state = values.get('state', [])
+            valid = (self.headers.get('Host') == f'127.0.0.1:{port}' and parsed.path == '/callback' and len(valid_state) == 1
+                     and secrets.compare_digest(valid_state[0], state))
+            if not valid:
+                status, message = 400, 'Invalid sign-in callback. Return to your terminal.'
+            elif 'error' in values:
+                outcome['error'] = 'Google sign-in was denied or cancelled; run dc.py login --google to retry.'
+                status, message = 400, 'Sign-in was cancelled. Return to your terminal.'
+            elif len(code) != 1 or not code[0]:
+                outcome['error'] = 'Google returned an invalid sign-in callback.'
+                status, message = 400, 'Invalid sign-in callback. Return to your terminal.'
+            else:
+                outcome['code'] = hide(code[0])
+                status, message = 200, 'Authorization received. Return to your terminal to check sign-in.'
+            self.send_response(status)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Referrer-Policy', 'no-referrer')
+            self.end_headers()
+            self.wfile.write(message.encode())
+
+    class Listener(http.server.HTTPServer):
+        def get_request(self):
+            connection, address = super().get_request()
+            connection.settimeout(1)
+            return connection, address
+
+        def handle_error(self, request, client_address):
+            pass  # Never print request data or exception tracebacks.
+
+    try:
+        server = Listener(('127.0.0.1', port), Callback)
+    except OSError:
+        raise Fail(1, f'Cannot listen on 127.0.0.1:{port}; check for another login process or choose --port.')
+    with server:
+        server.timeout = 0.25
+        say(f'For SSH, forward this port: ssh -L {port}:127.0.0.1:{port} user@ssh-host')
+        say('Open this URL in your browser (keep it private):\n' + url)
+        deadline = time.monotonic() + timeout
+        while not outcome and time.monotonic() < deadline:
+            server.handle_request()
+    if not outcome:
+        raise Fail(1, 'Google sign-in timed out; run dc.py login --google to retry.')
+    if 'error' in outcome:
+        raise Fail(1, outcome['error'])
+    status, data = oauth_send(cfg, 'POST', '/api/collections/agents/auth-with-oauth2', {
+        'provider': 'google', 'code': outcome['code'], 'codeVerifier': verifier, 'redirectURL': redirect,
+    })
+    if status != 200:
+        raise Fail(1, f'Google sign-in failed: HTTP {status}. Check Workspace eligibility, account access, and the redirect URI with your operator.')
+    return auth_session(cfg, data, 'google')
 
 
 def token_rejected(cfg, token):
@@ -155,8 +290,18 @@ def call(cfg, method, path, body=None):
     cached = session is not None
     if not cached:
         session = login(cfg)
+    if session.get('method') == 'google' and (oauth_refresh_needed(session) or path == '/api/collections/agents/auth-refresh'):
+        # Renew at most every five minutes, or near expiry, to respect auth rate limits.
+        status, data = oauth_send(cfg, 'POST', '/api/collections/agents/auth-refresh', token=session['token'])
+        if status != 200:
+            raise Fail(1, f'Google session could not be refreshed (HTTP {status}); run dc.py login --google again.')
+        session = auth_session(cfg, data, 'google')
+        if path == '/api/collections/agents/auth-refresh':
+            return status, data
     status, data = send(cfg, method, path, body, session['token'])
     if cached and 400 <= status < 500 and status != 409 and (status == 401 or token_rejected(cfg, session['token'])):
+        if session.get('method') == 'google':
+            raise Fail(1, 'Google session was rejected; run dc.py login --google again.')
         session = login(cfg)
         status, data = send(cfg, method, path, body, session['token'])
     return status, data
@@ -228,6 +373,8 @@ def skill_advisory(cfg, force=False):
             except Fail:
                 status, data = 0, None
             if status == 401 and attempt == 0:
+                if session.get('method') == 'google':
+                    raise Fail(1, 'Google session was rejected; run dc.py login --google again.')
                 session = login(cfg)
                 continue
             break
@@ -344,6 +491,10 @@ def run(args):
         say(f'removed {path}', sys.stdout)
         return 0
     cfg = config()
+    if args.command == 'login':
+        google_login(cfg, args.port, args.timeout)
+        say(f'Signed in as {cfg["email"]} at {cfg["url"]}', sys.stdout)
+        return 0
     # Reject malformed writes before authentication or any network request.
     body = None
     if args.command in ('create', 'update'):
@@ -391,6 +542,10 @@ def parse(argv):
         command = commands.add_parser(name, parents=[pretty], help=text, description=text)
         for argument, argument_help in arguments:
             command.add_argument(argument, help=argument_help)
+    oauth_login = commands.add_parser('login', help='sign in with Google using a browser and a loopback callback')
+    oauth_login.add_argument('--google', action='store_true', required=True)
+    oauth_login.add_argument('--port', type=int, default=8765, help='loopback callback port; register the matching redirect URI')
+    oauth_login.add_argument('--timeout', type=int, default=180, help='seconds to wait for the browser (1–600)')
     add('whoami', 'print the agent id, name, and server URL; the id is the value for `owner`')
     add('check', 'compare the live schema with references/schema.json; exit 3 when they differ')
     add('schema', 'print the live SQL tables and columns')

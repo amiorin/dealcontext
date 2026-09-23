@@ -45,3 +45,12 @@ jobs:
         run: python3 dealcontext/tests/deploy.py --binary pocketcontext/bin/pocketcontext
       - name: Test public enquiry intake
         run: python3 dealcontext/tests/intake.py --binary pocketcontext/bin/pocketcontext
+      - name: Test OAuth protocol and Google JIT
+        run: |
+          python3 dealcontext/tests/oauth_config.py --binary pocketcontext/bin/pocketcontext
+          python3 dealcontext/tests/oauth.py
+          python3 dealcontext/tests/oauth_integration.py --binary pocketcontext/bin/pocketcontext
+      - name: Test disabled accounts and realtime revocation
+        run: |
+          python3 dealcontext/tests/account_access.py --binary pocketcontext/bin/pocketcontext
+          python3 dealcontext/tests/realtime_access.py --binary pocketcontext/bin/pocketcontext
