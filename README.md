@@ -150,7 +150,9 @@ The body is one JSON object of at most 16 KB, sent with `Content-Type: applicati
 | `website` | Honeypot. A form hides this input from people; a request that fills it is treated as a bot. |
 | any other key | Stored under that key in the JSON column `details`. At most 20 keys, names matching `[a-z0-9_]{1,40}`, string values of at most 4000 characters. The server does not interpret them. |
 
-DealContext is a generic CRM, so only the name, the address, and the campaign parameters are columns. The PocketContext website sends `interest`, `workflow`, `requirements`, `timeline`, and `entry_offer`, which all go to `details`; another form can send other keys without a migration.
+DealContext is a generic CRM, so only the name, the address, and the campaign parameters are columns. The PocketContext website sends `application`, `interest`, `workflow`, `requirements`, `timeline`, and `entry_offer`, which all go to `details`; another form can send other keys without a migration.
+
+`application` is `dealcontext`, `peoplecontext`, `taskcontext`, `raisecontext`, `custom`, or an empty string when the visitor selects “Not sure yet”. These are website choices, not server-enforced values. For example, a RaiseContext enquiry stores `details.application = "raisecontext"`.
 
 ```sh
 curl --fail-with-body https://crm.example.com/api/intake/enquiry \

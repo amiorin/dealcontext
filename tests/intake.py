@@ -29,14 +29,14 @@ RECIPIENTS = '/api/collections/enquiry_notification_recipients/records'
 SITE, OTHER_SITE, APP = 'https://pocketcontext.example', 'https://www.pocketcontext.example', 'https://crm.example.test'
 USER_AGENT = 'IntakeTestBrowser/1.0'
 NOTIFY = 'operator@example.test'
-# The keys of the form in the website's src/pages/index.astro: FormData of every named control (the honeypot
+# The keys of the form in the website's src/layouts/HomePage.astro: FormData of every named control (the honeypot
 # included, empty), then the three UTM keys from the page URL, empty when absent.
 FORM = {
     'name': 'Grace Hopper', 'email': 'grace@example.org', 'interest': 'both', 'workflow': 'Quotes from email threads',
     'requirements': 'We need <b>audit</b> & "SQL" access.\nTwo teams.', 'timeline': 'Within 3 months', 'website': '',
-    'entry_offer': 'general', 'utm_source': 'newsletter', 'utm_medium': '', 'utm_campaign': '',
+    'application': 'raisecontext', 'entry_offer': 'general', 'utm_source': 'newsletter', 'utm_medium': '', 'utm_campaign': '',
 }
-DETAILS = ['interest', 'workflow', 'requirements', 'timeline', 'entry_offer']
+DETAILS = ['application', 'interest', 'workflow', 'requirements', 'timeline', 'entry_offer']
 COLUMNS = {'collectionId', 'collectionName', 'id', 'name', 'email', 'status', 'source', 'utm_source', 'utm_medium', 'utm_campaign',
            'details', 'person', 'deal', 'updated_by', 'created', 'updated'}
 
